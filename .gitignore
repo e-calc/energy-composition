@@ -1,0 +1,9 @@
+/kareus/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/weights/
+data/*.sqlite*
+data/export/
+results/
