@@ -1,0 +1,512 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agent-led ecalc validation request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "model",
+    "capture",
+    "scope",
+    "target",
+    "measurement",
+    "budget",
+    "acceptance",
+    "output"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "source",
+        "checkpoint"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "checkpoint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "variant": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "levels",
+        "policy",
+        "adapter_mode",
+        "reference_compare"
+      ],
+      "properties": {
+        "levels": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "module",
+              "leaf"
+            ]
+          }
+        },
+        "policy": {
+          "enum": [
+            "ecalc-yolo-v1",
+            "agent-declared-v1"
+          ]
+        },
+        "adapter_mode": {
+          "enum": [
+            "independent",
+            "reuse"
+          ]
+        },
+        "reference_compare": {
+          "enum": [
+            "after-freeze",
+            "none"
+          ]
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stage",
+        "workloads",
+        "execution",
+        "tf32",
+        "preprocessing",
+        "postprocessing"
+      ],
+      "properties": {
+        "stage": {
+          "enum": [
+            "capture-only",
+            "energy-validation"
+          ]
+        },
+        "workloads": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "shape": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "dtype": {
+                "type": "string",
+                "minLength": 1
+              },
+              "input": {
+                "enum": [
+                  "seeded-random"
+                ]
+              },
+              "seed": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "factory": {
+                "type": "string",
+                "minLength": 1
+              },
+              "distribution": {
+                "const": "standard-normal"
+              },
+              "rng": {
+                "const": "torch-cpu-generator"
+              }
+            },
+            "oneOf": [
+              {
+                "required": [
+                  "shape",
+                  "dtype",
+                  "input",
+                  "seed",
+                  "distribution",
+                  "rng"
+                ],
+                "not": {
+                  "required": [
+                    "factory"
+                  ]
+                }
+              },
+              {
+                "required": [
+                  "factory"
+                ],
+                "not": {
+                  "required": [
+                    "shape"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "execution": {
+          "enum": [
+            "eval-inference",
+            "fused-eval-inference"
+          ]
+        },
+        "tf32": {
+          "type": "boolean"
+        },
+        "preprocessing": {
+          "enum": [
+            "included",
+            "excluded"
+          ]
+        },
+        "postprocessing": {
+          "enum": [
+            "included",
+            "excluded"
+          ]
+        },
+        "pipeline_factory": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gpu",
+        "account",
+        "partition"
+      ],
+      "properties": {
+        "gpu": {
+          "type": "string",
+          "minLength": 1
+        },
+        "account": {
+          "type": "string",
+          "minLength": 1
+        },
+        "partition": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cache",
+        "repeats",
+        "window_seconds",
+        "cooldown_seconds",
+        "warmup_calls",
+        "calibration_calls"
+      ],
+      "properties": {
+        "cache": {
+          "enum": [
+            "compatible-only",
+            "remeasure"
+          ]
+        },
+        "repeats": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "window_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "cooldown_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "warmup_calls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "calibration_calls": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_new_components",
+        "gpu_minutes"
+      ],
+      "properties": {
+        "max_new_components": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "gpu_minutes": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "acceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "complete_coverage",
+        "replay_rtol",
+        "replay_atol",
+        "max_abs_energy_error_pct",
+        "require_reference_equivalence"
+      ],
+      "properties": {
+        "complete_coverage": {
+          "const": true
+        },
+        "replay_rtol": {
+          "type": "number",
+          "minimum": 0
+        },
+        "replay_atol": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_abs_energy_error_pct": {
+          "type": "number",
+          "minimum": 0
+        },
+        "require_reference_equivalence": {
+          "type": "boolean"
+        }
+      }
+    },
+    "output": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adapter",
+        "revision"
+      ],
+      "properties": {
+        "adapter": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "scope": {
+            "properties": {
+              "stage": {
+                "const": "capture-only"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "budget": {
+            "properties": {
+              "max_new_components": {
+                "const": 0
+              },
+              "gpu_minutes": {
+                "const": 0
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "budget": {
+            "properties": {
+              "gpu_minutes": {
+                "exclusiveMinimum": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "acceptance": {
+            "properties": {
+              "require_reference_equivalence": {
+                "const": true
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "capture": {
+            "properties": {
+              "reference_compare": {
+                "const": "after-freeze"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "capture": {
+            "properties": {
+              "policy": {
+                "const": "ecalc-yolo-v1"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "scope": {
+            "properties": {
+              "execution": {
+                "const": "fused-eval-inference"
+              },
+              "preprocessing": {
+                "const": "excluded"
+              },
+              "postprocessing": {
+                "const": "excluded"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "capture": {
+            "properties": {
+              "reference_compare": {
+                "const": "after-freeze"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "reference"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "capture": {
+            "properties": {
+              "policy": {
+                "const": "ecalc-yolo-v1"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "model": {
+            "required": [
+              "variant"
+            ],
+            "properties": {
+              "variant": {
+                "enum": [
+                  "nms-free-end2end",
+                  "one-to-many"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "scope": {
+            "anyOf": [
+              {
+                "properties": {
+                  "preprocessing": {
+                    "const": "included"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "postprocessing": {
+                    "const": "included"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "scope": {
+            "required": [
+              "pipeline_factory"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}
