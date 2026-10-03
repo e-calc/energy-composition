@@ -13,18 +13,19 @@ from ecalc import config as C, db  # noqa: E402
 from ecalc.estimate import (compare_levels, compare_levels_table, db_size_summary, db_size_table,  # noqa: E402
                             estimate_model, per_layer_table, plot_estimates, plot_level_comparison, summary_lines,
                             write_compare_report, write_report)
-from ecalc.models import ALL_MODELS, variant_name  # noqa: E402
+from ecalc.models import default_size, parse_model_list, variant_name  # noqa: E402
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--models", default="all")
+    ap.add_argument("--models", default="all", help="comma list, 'all' (YOLO26) or 'rfml'")
     ap.add_argument("--db", default=str(C.DB_PATH))
     ap.add_argument("--gpu", default=None, help="gpu_name in the DB (default: the only one present)")
     ap.add_argument("--freq", default="default")
     ap.add_argument("--dtype", default="fp32")
     ap.add_argument("--batch", type=int, default=C.BATCH)
-    ap.add_argument("--imgsz", type=int, default=C.IMGSZ)
+    ap.add_argument("--imgsz", type=int, default=None,
+                    help="YOLO image size (default 640) or RFML IQ frame length (default 1024)")
     ap.add_argument("--one2many", action="store_true")
     ap.add_argument("--level", choices=list(C.LEVELS), default="module")
     ap.add_argument("--compare-levels", action="store_true",
@@ -44,7 +45,12 @@ def main() -> None:
         if len(gpus) != 1:
             sys.exit(f"--gpu required; DB has {gpus}")
         gpu = gpus[0]
-    names = ALL_MODELS if args.models == "all" else args.models.split(",")
+    names = parse_model_list(args.models)
+    if args.imgsz is None:
+        sizes = {default_size(n) for n in names}
+        if len(sizes) != 1:
+            sys.exit(f"--imgsz required: models {names} have different default sizes {sorted(sizes)}")
+        args.imgsz = sizes.pop()
     vnames = [variant_name(n, not args.one2many) for n in names]
     ests = []
     for v in vnames:
@@ -53,7 +59,7 @@ def main() -> None:
         if e.misses and not args.allow_miss:
             sys.exit(f"{v}: {e.misses} kernels missing from the DB (use --allow-miss or run build_kernel_db.py "
                      f"--level {args.level})")
-        print(f"[batch {args.batch}, {args.imgsz}px, level {args.level}]")
+        print(f"[batch {args.batch}, size {args.imgsz}, level {args.level}]")
         print("\n".join(summary_lines(e)))
         if not args.no_layers:
             print(per_layer_table(e))

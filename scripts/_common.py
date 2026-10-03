@@ -18,14 +18,15 @@ import torch  # noqa: E402
 from ecalc import config as C  # noqa: E402
 from ecalc.gpu import (ensure_persistence_mode, gpu_name, nvml_handle_for_torch_device, reset_clocks,  # noqa: E402
                        snapshot, try_lock_clocks)
-from ecalc.models import ALL_MODELS, precision_flags, set_precision, versions  # noqa: E402
+from ecalc.models import default_size, parse_model_list, precision_flags, set_precision, versions  # noqa: E402
 
 
 def add_measure_args(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--db", default=str(C.DB_PATH))
     ap.add_argument("--device", type=int, default=0, help="torch cuda device index")
     ap.add_argument("--batch", type=int, default=C.BATCH, help="input batch size")
-    ap.add_argument("--imgsz", type=int, default=C.IMGSZ, help="input image size")
+    ap.add_argument("--imgsz", type=int, default=None,
+                    help="YOLO input image size (default 640) or RFML IQ frame length (default 1024)")
     ap.add_argument("--repeats", type=int, default=1,
                     help="Zeus trials per kernel (median kept); 1 is enough, repeat CV is <2% on the A40")
     ap.add_argument("--measurement-duration", type=float, default=5.0)
@@ -50,7 +51,8 @@ def add_level_arg(ap: argparse.ArgumentParser) -> None:
 
 
 def parse_models(s: str) -> list[str]:
-    return ALL_MODELS if s == "all" else [m.strip() for m in s.split(",") if m.strip()]
+    """``all`` (YOLO26 sizes), ``rfml`` (RFML models) or a comma list."""
+    return parse_model_list(s)
 
 
 def make_cfg(args) -> C.MeasureConfig:
@@ -69,8 +71,9 @@ class Session:
         self.args = args
         self.device = f"cuda:{args.device}"
         self.batch = int(getattr(args, "batch", C.BATCH))
-        self.imgsz = int(getattr(args, "imgsz", C.IMGSZ))
-        self.input_shape = (self.batch, 3, self.imgsz, self.imgsz)
+        self.imgsz_arg = getattr(args, "imgsz", None)
+        self.imgsz = int(self.imgsz_arg or C.IMGSZ)
+        self.input_shape = (self.batch, 3, self.imgsz, self.imgsz)  # YOLO input (static-power bursts)
         torch.cuda.set_device(args.device)
         self.handle = nvml_handle_for_torch_device(args.device)
         self.gpu_name = gpu_name(self.handle)
@@ -92,6 +95,10 @@ class Session:
         self.meta = dict(script=script, args=vars(args), gpu=self.gpu_name, cfg=vars(self.cfg),
                          snapshot=snapshot(self.handle).as_dict(), versions=versions(), precision=precision_flags())
         self.log(json.dumps(self.meta, default=str))
+
+    def size_for(self, name: str) -> int:
+        """``--imgsz`` if given, else the model family default (640 px YOLO, 1024-sample RFML frame)."""
+        return int(self.imgsz_arg or default_size(name))
 
     def log(self, msg: str) -> None:
         print(msg, flush=True)

@@ -9,6 +9,10 @@ its leaf submodules (``LEAF_CLASSES``) and a ``TorchFunctionMode`` that records 
 functional glue between them (``torch.cat``, ``chunk``, ``split``, residual ``add``).
 Nested leaves (Convs inside Attention/Detect) are suppressed by a depth counter, so
 every executed op is recorded exactly once, in execution order.
+
+``capture_sequential`` (level "module") handles models whose forward runs a top-level
+``layers`` ModuleList in order (``ecalc.rfml.SequentialRFModel``): each entry gets the
+previous entry's output.
 """
 
 from __future__ import annotations
@@ -256,7 +260,34 @@ def capture_leaves(det: nn.Module, x: torch.Tensor, layers: list[LayerRecord] | 
     return records
 
 
+@torch.inference_mode()
+def capture_sequential(model: nn.Module, x: torch.Tensor, record: bool = True) -> list[LayerRecord]:
+    """Run ``model.layers`` in order, recording each entry's input. First pass is un-recorded warm-up."""
+    if record:
+        capture_sequential(model, x, record=False)
+    records: list[LayerRecord] = []
+    cur = x
+    for i, m in enumerate(model.layers):
+        out = m(cur)
+        if record:
+            sig = kernel_signature(m, cur)
+            records.append(LayerRecord(
+                layer_idx=i, layer_type=type(m).__name__, from_idx=-1, module=m, inputs=_clone(cur),
+                input_sig=input_signature(cur), output_specs=output_specs(out), signature=sig,
+                kernel_key=kernel_key(sig), short_desc=short_desc(sig), level="module",
+                parent_layer_idx=i, path="", seq=i,
+            ))
+        cur = out
+    return records
+
+
 def capture(det: nn.Module, x: torch.Tensor, level: str = "module") -> list[LayerRecord]:
+    from .rfml import SequentialRFModel
+
+    if isinstance(det, SequentialRFModel):
+        if level != "module":
+            raise ValueError(f"level {level!r} is not implemented for RFML models (module level only)")
+        return capture_sequential(det, x)
     if level == "module":
         return capture_layers(det, x)
     if level == "leaf":

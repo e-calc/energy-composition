@@ -1,4 +1,4 @@
-# e-calc: per-kernel GPU energy database (first target: YOLO26)
+# e-calc: per-kernel GPU energy database (targets: YOLO26, RFML modulation classifiers)
 
 Energy model
 
@@ -20,7 +20,13 @@ Two granularities (`--level`) share one `kernel_energy` table (keys are level-ag
 Scope: inference, batch 1 and 8, fp32 (TF32 allowed unless `--strict-fp32`), 640x640, NMS-free (end2end) head,
 one A40.
 
-Study report with results: [docs/report_yolo26_a40.md](docs/report_yolo26_a40.md).
+RFML family (`--models rfml`, module level only): `rf_vgg` and `rf_resnet` (O'Shea et al. 2018) and `rf_lstm`
+(Rajendran et al. 2018) on RadioML 2018.01A-style 2x1024 IQ frames, 24 classes, seeded random weights. Each model
+is a top-level `ModuleList` run in order (11 / 10 / 3 components); for these models `--imgsz` and the DB `imgsz`
+column hold the IQ frame length (default 1024).
+
+Study reports with results: [docs/report_yolo26_a40.md](docs/report_yolo26_a40.md) (YOLO26),
+[docs/report_rfml_a40.md](docs/report_rfml_a40.md) (RFML, batch 32 and 256).
 
 ## Setup
 
@@ -35,6 +41,7 @@ Study report with results: [docs/report_yolo26_a40.md](docs/report_yolo26_a40.md
     uv run python scripts/inspect_model.py --models all --level leaf   # same at leaf level (no GPU needed)
     scripts/run_all.sh                                  # static power -> kernel DB -> end-to-end -> estimate -> CSV
     LEVEL=leaf SKIP_STATIC=1 SKIP_E2E=1 scripts/run_all.sh             # leaf DB + level comparison, reusing rows
+    MODELS=rfml BATCH=256 SKIP_STATIC=1 EXTRA="--repeats 3" scripts/run_all.sh   # RFML study, one batch size
 
 Individual steps (all accept `--db`, `--repeats`, `--measurement-duration`, `--cooldown`, `--strict-fp32`, ...):
 
@@ -55,8 +62,10 @@ Outputs: `data/ecalc.sqlite` (tables `kernel_energy`, `static_power`, `model_run
     ecalc/config.py       MeasureConfig, paths, scope constants
     ecalc/gpu.py          NVML: handle, snapshot, persistence mode, best-effort clock lock, ClockSampler
     ecalc/signature.py    module signature + input specs -> kernel_key; synthesize_inputs
-    ecalc/models.py       YOLO26 registry, load_fused_model (end2end head), make_input, TF32 flags
-    ecalc/capture.py      module level: BaseModel._predict_once routing; leaf level: hooks + TorchFunctionMode
+    ecalc/models.py       YOLO26 registry, load_fused_model (end2end head), make_input, TF32 flags, family dispatch
+    ecalc/rfml.py         RFML models (VGG, ResNet, LSTM), seeded loader, IQ frame inputs
+    ecalc/capture.py      module level: BaseModel._predict_once routing (YOLO) or in-order ModuleList (RFML);
+                          leaf level: hooks + TorchFunctionMode
     ecalc/measure.py      zeus.profile.measure wrapper with repeats + clock sampling (kernel and e2e)
     ecalc/static_power.py active_idle / post_burst / p8_idle
     ecalc/db.py           SQLite schema and API
