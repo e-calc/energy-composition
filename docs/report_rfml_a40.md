@@ -16,22 +16,25 @@ Each model runs at batch 32 and batch 256 on one A40.
 
 The main results are:
 
-- Module-level `E_sum` predicts all six model/batch cases within 6.2%. The mean
-  absolute error is 3.5% at batch 32 and 2.6% at batch 256.
+- Module-level `E_sum` predicts all six model/batch cases within 3.1%. The mean
+  absolute error is 2.2% at batch 32 and 1.4% at batch 256.
 - The LSTM is the easiest case (-1.2% and +0.2%). Its two recurrent layers keep
-  the GPU fully busy and dominate its energy. The VGG CNN is the hardest case
-  (-6.2% at batch 32, +6.2% at batch 256).
-- The two VGG errors have opposite signs. They follow the temperature
-  difference between the component and end-to-end measurements, plus, at batch
-  256, launch overhead of the small late layers that end-to-end execution hides.
-  In a diagnostic re-measurement, the same VGG forward cost 9% more energy at
-  66–72 °C than at 54–62 °C. With the components re-measured on a warm GPU, the
-  batch-32 VGG error fell from -6.2% to -2.4%.
+  the GPU fully busy and dominate its energy.
+- GPU temperature is the main error source for these small models: the same
+  forward pass costs about 0.7% more energy per °C. With the original 3-second
+  cooldown, VGG was off by -6.2% (batch 32) and +6.2% (batch 256), because its
+  components and its end-to-end run were measured at different temperatures.
+  The VGG data in this report were re-measured with a 10-second cooldown, after
+  which every measurement starts in the same 66–70 °C band. VGG's errors fell to
+  -2.2% and +2.5% (Section 6.1).
+- The remaining VGG error at batch 256 is structural: the tiny late layers are
+  launch-bound when measured alone, but their launch time is hidden inside the
+  full model. This adds about 2.5% to `E_sum` for both CNNs.
 - The three models contain 24 module instances but need 21 database entries
   per batch size, because VGG and ResNet share the same dense classifier head.
-- Moving from batch 32 to batch 256 reduces measured energy per frame by about
-  30% for all three models, and the static share of `E_sum` falls from
-  48–60% to 31–34%.
+- Moving from batch 32 to batch 256 reduces measured energy per frame by
+  27–31% for all three models, and the static share of `E_sum` falls from
+  48–59% to 31–35%.
 
 ## 1. Objective
 
@@ -120,12 +123,12 @@ not change the `E_sum` prediction.
 | Item | Configuration |
 |---|---|
 | GPU | NVIDIA A40, 300 W power cap, 1740 MHz maximum SM clock |
-| Software | Python 3.12, PyTorch 2.14.0+cu130, Zeus 0.16.0, driver 595.71.05 |
+| Software | Python 3.12, PyTorch 2.14.0+cu130, Zeus 0.16.0 (VGG rows: Zeus master `796e8ada`, see below), driver 595.71.05 |
 | Models | `rf_vgg`, `rf_resnet`, `rf_lstm`; seeded random weights (seed 0) |
 | Input | 1024-sample frames, seeded standard-normal FP32 tensors (complex-AWGN-like IQ) |
 | Precision | FP32 with TF32 enabled for convolution and matrix multiplication |
 | Batch sizes | 32 and 256 |
-| Kernel protocol | 5 s measurement window, 3 s cooldown, 50 warm-up calls, 1000 calibration calls |
+| Kernel protocol | 5 s measurement window, 50 warm-up calls, 1000 calibration calls; cooldown 10 s for `rf_vgg`, 3 s for `rf_resnet` and `rf_lstm` |
 | Repeats | 3 for module entries and end-to-end measurements (median-energy trial kept) |
 | GPU state | persistence mode off, unlocked clocks, as for the YOLO data |
 
@@ -135,8 +138,16 @@ the measured energy does not depend on training. Preprocessing is excluded. For
 the LSTM this means the IQ-to-amplitude/phase conversion is excluded, and the
 model receives a 1024 × 2 sequence directly.
 
+The `rf_vgg` component and end-to-end rows were re-measured with a 10-second
+cooldown (Section 6.1). They include the three dense-head entries that VGG
+shares with ResNet, so ResNet's `E_sum` uses those rows as well. This changes
+ResNet's `E_sum` by less than 0.05%. The `rf_resnet` and `rf_lstm` rows use the
+original 3-second cooldown. The VGG re-measurement ran on Zeus master (commit
+`796e8ada`). Without the new settle option it measures the same way as 0.16.0,
+except that the starting temperature is read after the warm-up calls.
+
 Every module lookup succeeds for all six model/batch cases. The repeat-to-repeat
-energy variation of the 42 component entries has a median of 0.6% and a maximum
+energy variation of the 42 component entries has a median of 0.7% and a maximum
 of 2.1%. All rows ran at 1740 MHz without clock dips. Most rows carry a
 temperature-rise flag (more than 5 °C within a measurement), as many YOLO rows
 did.
@@ -147,73 +158,76 @@ did.
 
 | Model | Measured energy / forward | `E_sum` | Estimation error | Measured time | GPU-active share | Measured energy / frame |
 |---|---:|---:|---:|---:|---:|---:|
-| `rf_vgg` | 107.2 mJ | 100.6 mJ | **-6.2%** | 0.67 ms | 50% | 3.35 mJ |
+| `rf_vgg` | 105.8 mJ | 103.5 mJ | **-2.2%** | 0.69 ms | 50% | 3.31 mJ |
 | `rf_resnet` | 223.3 mJ | 216.4 mJ | **-3.1%** | 1.49 ms | 44% | 6.98 mJ |
 | `rf_lstm` | 909.5 mJ | 898.5 mJ | **-1.2%** | 4.81 ms | 100% | 28.42 mJ |
 
-The mean absolute error is 3.5%. At batch 32 the two CNNs are half
+The mean absolute error is 2.2%. At batch 32 the two CNNs are half
 launch-bound: the GPU executes kernels for only 44–50% of the forward pass. In
-isolation, every block after the first two or three takes 73–75 µs (`ConvPool`)
+isolation, every block after the first two or three takes 74–76 µs (`ConvPool`)
 or 205–239 µs (`ResidualStack`) of wall time, but only 20–130 µs of GPU time,
 and draws 100–170 W. The LSTM is the opposite case: its two layers are long
 cuDNN recurrent kernels (2.4 ms each) that keep the GPU busy.
 
-Time composes well for VGG (-0.4%) and the LSTM (+0.7%). For ResNet the sum of
-isolated block times is 4.4% below the end-to-end time. Its energy error
-(-3.1%) follows from the missing time at a moderate power.
+Time composes well for VGG (-1.1%) and the LSTM (+0.7%). For ResNet the sum of
+isolated block times is 4.3% below the end-to-end time. Its energy error
+(-3.1%) follows from the missing time at a moderate power. Most of VGG's -2.2%
+comes from its first two blocks, which carry 46% of its energy. They were
+measured at the start of a session on a cold GPU, at 55–65 °C at the start of the
+window instead of the 66–70 °C of all later measurements (Section 6.1).
 
 ### 4.2 Batch 256
 
 | Model | Measured energy / forward | `E_sum` | Estimation error | Measured time | GPU-active share | Measured energy / frame | Change per frame from batch 32 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `rf_vgg` | 610.7 mJ | 648.3 mJ | **+6.2%** | 2.28 ms | 99% | 2.39 mJ | -29% |
-| `rf_resnet` | 1240.1 mJ | 1259.3 mJ | **+1.6%** | 4.25 ms | 99% | 4.84 mJ | -31% |
+| `rf_vgg` | 615.7 mJ | 631.4 mJ | **+2.5%** | 2.28 ms | 99% | 2.41 mJ | -27% |
+| `rf_resnet` | 1240.1 mJ | 1258.7 mJ | **+1.5%** | 4.25 ms | 99% | 4.84 mJ | -31% |
 | `rf_lstm` | 5024.4 mJ | 5032.4 mJ | **+0.2%** | 17.37 ms | 100% | 19.63 mJ | -31% |
 
-The mean absolute error is 2.6%. At batch 256 the end-to-end forward keeps the
+The mean absolute error is 1.4%. At batch 256 the end-to-end forward keeps the
 GPU 99–100% busy. The sum of block times now overshoots end-to-end time for the
-CNNs (+7.3% VGG, +8.1% ResNet). The last few CNN blocks and the dense head work
+CNNs (+6.8% VGG, +8.0% ResNet). The last few CNN blocks and the dense head work
 on 8–64-sample feature maps and stay launch-bound when measured alone. For
-example, the last VGG `ConvPool` takes 76 µs of wall time for 24 µs of GPU
+example, the last VGG `ConvPool` takes 71 µs of wall time for 25 µs of GPU
 work. In the full forward pass, the CPU launches these blocks while the GPU is
 still busy with the large early layers, so their launch time is hidden. Summing
-the wall-minus-GPU time of these blocks gives 177 µs for VGG and 379 µs for
-ResNet. That matches the time overshoots of 167 µs and 342 µs.
+the wall-minus-GPU time of all blocks gives about 175 µs for VGG and 379 µs for
+ResNet. That matches the time overshoots of 154 µs and 339 µs.
 
-The overshoot is time spent near the static floor. At 89.7 W it adds about 15 mJ
-to VGG's `E_sum` (+2.5%) and about 31 mJ to ResNet's (+2.5%). ResNet's +1.6%
-is therefore fully explained by this launch overhang. VGG's +6.2% is not: a
-further +3.7% comes from the large early `ConvPool` blocks themselves, which
-were measured hotter than the end-to-end runs (Section 6).
+The overshoot is time spent near the static floor. At 89.7 W it adds about 14 mJ
+to VGG's `E_sum` (+2.2%) and about 30 mJ to ResNet's (+2.5%). VGG's +2.5% is
+therefore almost entirely this launch overhang. ResNet's +1.5% is slightly below
+it. ResNet was measured with the 3-second cooldown, so its components and its
+end-to-end run may sit at different temperatures (Section 6.1).
 
 ### 4.3 Static and dynamic energy portions
 
 | Model | Batch-32 dynamic | Batch-32 static | Batch-256 dynamic | Batch-256 static |
 |---|---:|---:|---:|---:|
-| `rf_vgg` | 40% | 60% | 66% | 34% |
+| `rf_vgg` | 41% | 59% | 65% | 35% |
 | `rf_resnet` | 41% | 59% | 67% | 33% |
 | `rf_lstm` | 52% | 48% | 69% | 31% |
 
-At batch 32 the static floor accounts for about 60% of the CNN estimates, the
+At batch 32 the static floor accounts for about 59% of the CNN estimates, the
 same range as the launch-bound batch-1 YOLO26n and YOLO26s. At batch 256 the static share
-falls to 31–34% for all three models, close to the 30% that every YOLO26 size
-reached at batch 8. Energy per frame drops by 29–31%.
+falls to 31–35% for all three models, close to the 30% that every YOLO26 size
+reached at batch 8. Energy per frame drops by 27–31%.
 
 ### 4.4 Energy distribution by module type
 
 | Model | Batch | Main blocks | `Flatten` | Dense head (2 × `DenseSELU` + classifier) |
 |---|---:|---:|---:|---:|
-| `rf_vgg` | 32 | 90.0% (`ConvPool`) | 0.3% | 9.7% |
-| `rf_vgg` | 256 | 98.3% (`ConvPool`) | 0.1% | 1.7% |
-| `rf_resnet` | 32 | 95.4% (`ResidualStack`) | 0.2% | 4.6% |
-| `rf_resnet` | 256 | 99.1% (`ResidualStack`) | 0.0% | 0.9% |
+| `rf_vgg` | 32 | 90.2% (`ConvPool`) | 0.3% | 9.5% |
+| `rf_vgg` | 256 | 98.3% (`ConvPool`) | 0.1% | 1.6% |
+| `rf_resnet` | 32 | 95.3% (`ResidualStack`) | 0.2% | 4.5% |
+| `rf_resnet` | 256 | 99.2% (`ResidualStack`) | 0.0% | 0.8% |
 | `rf_lstm` | 32 | 99.6% (`LSTMLayer`) | – | 0.4% |
 | `rf_lstm` | 256 | 99.9% (`LSTMLayer`) | – | 0.1% |
 
 Energy is concentrated in the full-resolution front of each network. The
 first `ConvPool` and the first `ResidualStack`, which operate on all 1024
 samples, are the largest single modules: 28% and 29% of `E_sum` at batch 32,
-40% and 50% at batch 256. The two LSTM layers split energy almost evenly (48%
+39% and 50% at batch 256. The two LSTM layers split energy almost evenly (48%
 and 52%). The dense head is a measurable share only at batch 32. There it is
 launch-bound and runs at about 100 W.
 
@@ -233,9 +247,9 @@ different module with a different input, so it is a separate entry.
 
 There is no reuse within a model. Every CNN block works at a different sequence
 length, and sequence length is part of the input signature. Batch size is part
-of the signature too, so batch 256 needs another 21 entries. Building the
-database took 8.8 minutes for batch 32 and 9.8 minutes for batch 256, with
-three repeats.
+of the signature too, so batch 256 needs another 21 entries. With three repeats and the 3-second cooldown, building the database took
+8.8 minutes for batch 32 and 9.8 minutes for batch 256. The 10-second cooldown
+adds about 21 seconds per entry.
 
 For comparison, YOLO26 reached 96 entries for 120 instances across five sizes
 of one family. Cross-architecture reuse in RFML is limited to shared heads,
@@ -243,50 +257,75 @@ unless the database grows to cover many models built from the same blocks.
 
 ## 6. Error sources specific to small models
 
-### 6.1 GPU temperature
+### 6.1 GPU temperature and the cooldown
 
-These models draw 230–300 W in short kernels, and the 3-second cooldown does
-not return the GPU to a fixed temperature. Temperature therefore drifts through
-a measurement session. The measurements show the effect directly. For
-`rf_vgg` at batch 256, the three end-to-end repeats ran at the same time per
-forward (2.28 ms) and the same clock (1740 MHz), but their energy rose from
-593 mJ to 611 mJ to 617 mJ as the start temperature rose from 63 °C to 70 °C.
+These models draw 230–300 W in short kernels, so the GPU temperature changes
+quickly, and energy follows it. At the same time per forward and the same
+1740 MHz clock, VGG's forward pass costs about **0.7–0.8% more energy per °C**:
 
-The sign of the VGG errors follows the temperature difference between the
-component and end-to-end measurements:
+- at batch 32, 94.3 mJ with a 48–58 °C window against 105.8 mJ at 65–71 °C;
+- at batch 256, 627 mJ at 81 °C against 650 mJ at 86 °C.
 
-- **Batch 32 (-6.2%).** The session started on a cold GPU. The VGG components
-  were measured first, at 56–66 °C, and the end-to-end runs later, at 70–74 °C.
-  The cooler components draw less leakage power, so `E_sum` comes out low.
-  Time agrees within 0.4%, so the gap is a power difference, not missing work.
-- **Batch 256 (+6.2%).** The large `ConvPool` components heated the GPU to
+A 10 °C difference between the component measurements and the end-to-end
+measurement therefore produces a 7–8% estimation error.
+
+**The original 3-second cooldown.** Zeus's cooldown is an idle pause before
+each trial. Three seconds is too short to return the GPU to a fixed temperature,
+so each measurement started at a temperature set by whatever ran before it. The
+first VGG run therefore gave:
+
+- **Batch 32: -6.2%.** The session started on a cold GPU. The components were
+  measured first, at 56–66 °C, and the end-to-end runs last, at 70–74 °C.
+  Time agreed within 0.4%, so the gap was a power difference, not missing work.
+- **Batch 256: +6.2%.** The large `ConvPool` components heated the GPU to
   82–85 °C during their own windows. The median end-to-end trial ran at
-  67–78 °C. `E_sum` comes out high.
+  67–78 °C. The three end-to-end repeats themselves rose from 593 to 617 mJ as
+  the GPU warmed.
 
-A separate diagnostic tested this for `rf_vgg` at batch 32, using a scratch
-copy of the database so that the primary results above are unchanged. It
-measured the end-to-end forward on a cool GPU, then re-measured all 11
-components, and then measured the end-to-end forward again on the warm GPU:
+**Protocols compared.** We re-measured VGG's 11 components and its end-to-end
+forward under three alternative protocols, each in a scratch copy of the
+database. End-to-end was measured both before and after the components. The
+"error" columns compare `E_sum` with the end-to-end run measured after the
+components, which is the order the main study uses.
 
-| Diagnostic measurement | GPU temperature | Time / forward | Energy / forward |
+| VGG protocol | Batch-32 error | Batch-256 error | End to end, before vs after components (batch 32 / 256) |
 |---|---:|---:|---:|
-| End to end, cool GPU | 54–62 °C | 676 µs | 97.6 mJ |
-| Components re-measured (`E_sum`) | 62–77 °C | 668 µs (sum) | 103.8 mJ |
-| End to end, warm GPU | 66–72 °C | 673 µs | 106.4 mJ |
+| 3 s cooldown (first run) | -6.2% | +6.2% | not measured |
+| 3 s cooldown, components re-measured on a warm GPU | -2.4% | – | – |
+| 20 s settle (run the workload 20 s before each window; Zeus master) | -0.6% | -0.0% | +11% / -3.4% |
+| **10 s cooldown (used in this report)** | **-2.2%** | **+2.5%** | +12% / **-0.2%** |
 
-The same forward pass costs 9% more energy at 66–72 °C than at 54–62 °C, at
-the same time per forward and the same 1740 MHz clock. With the components
-measured on a warm GPU, the batch-32 VGG error against the warm end-to-end run
-falls from -6.2% to **-2.4%**. Most of the original error therefore comes from
-the temperature difference, not from the decomposition. These diagnostic rows
-are not used anywhere else in this report.
+A 10-second cooldown lets the A40 fall from about 80 °C back to a stable
+66–70 °C band. From then on, every measurement starts in that band, whatever
+ran before it. At batch 256 the two end-to-end runs on either side of the 11
+component measurements then agree within 0.2%. VGG's remaining errors are
+explainable:
+
+- **Batch 32 (-2.2%):** cold start. The session began on an idle GPU at
+  44 °C. The first two components, which carry 46% of VGG's energy, started at
+  55–65 °C instead of 66–70 °C. The end-to-end run measured before the
+  components was cold for the same reason (+12%).
+- **Batch 256 (+2.5%):** launch overhang (Section 6.2). It predicts about
+  +2.2%.
+
+The 20-second settle gave the smallest errors, but they are less trustworthy.
+Twenty seconds is far shorter than the time the GPU needs to reach a steady
+temperature, so the end-to-end result still moved by 3–11% depending on what
+ran before it. Its batch-256 match also comes partly from cancellation: the
+components ran 1–5 °C cooler than the end-to-end runs, which offset the +2.2%
+launch overhang.
+
+We therefore use the 10-second cooldown for VGG. ResNet and the LSTM keep their
+3-second data. The LSTM's long recurrent kernels dominate its energy and were
+measured within 1.2% of end to end. ResNet's -3.1% and +1.5% may still contain
+a temperature component of the size VGG had at 3 seconds.
 
 ### 6.2 Hidden launch overhead
 
 At batch 256, the end-to-end forward hides the CPU launch time of the small late
 blocks behind the GPU work of earlier blocks. In isolation, the same blocks
-show it in full. Section 4.2 quantifies this at about +2.5% of `E_sum` for both
-CNNs. For YOLO26 at batch 8, block times summed to within 0.4% of end-to-end time for
+show it in full. Section 4.2 quantifies this at about +2.2% of `E_sum` for VGG and +2.5% for
+ResNet. For YOLO26 at batch 8, block times summed to within 0.4% of end-to-end time for
 s/m/l/x, and this effect was not visible. RFML networks shrink the sequence by 64–128× from input to head, so
 their last blocks are much smaller than YOLO's.
 
@@ -297,17 +336,18 @@ one larger unit would remove this bias, at the cost of less reuse.
 
 ## 7. Conclusions
 
-The module database estimates RFML inference energy within 6.2% for all three
-architectures and both batch sizes, with mean absolute errors of 3.5% at batch
-32 and 2.6% at batch 256. The estimator works across a 50-fold range in forward
+The module database estimates RFML inference energy within 3.1% for all three
+architectures and both batch sizes, with mean absolute errors of 2.2% at batch
+32 and 1.4% at batch 256. The estimator works across a 50-fold range in forward
 energy, from 0.10 J (VGG, batch 32) to 5.0 J (LSTM, batch 256). Recurrent layers
 are the most predictable case (within 1.2%), because they are long kernels that
 keep the GPU busy.
 
 Two error sources are larger for these models than for YOLO26:
 
-- the GPU temperature at measurement time: the same forward cost up to 9% more
-  energy on a warm GPU than on a cool one;
+- the GPU temperature at measurement time: energy rises about 0.7–0.8% per °C,
+  and a 3-second cooldown let VGG's components and end-to-end run differ by
+  about 10 °C;
 - launch overhead of tiny late blocks, which end-to-end execution hides at
   large batch.
 
@@ -316,10 +356,12 @@ For future RFML measurements we recommend:
 - estimator: **`E_sum`**, with **`active_idle` at 89.7 W** for the static and
   dynamic split;
 - database level: **module**, with the blocks listed in Section 2.1;
-- warming the GPU to its steady operating temperature before component and
-  end-to-end measurements, or interleaving them, so that both are measured at
-  the same temperature. Treat end-to-end repeat spreads above about 1% as a
-  warning sign.
+- a **10-second cooldown**, so every component and end-to-end measurement
+  starts at the same 66–70 °C operating temperature, plus one discarded
+  warm-up trial at the start of each session to avoid the cold start that still
+  affects VGG at batch 32;
+- re-measuring ResNet and the LSTM with this protocol, which this report has not
+  yet done. Treat end-to-end repeat spreads above about 1% as a warning sign.
 
 These conclusions apply to the measured A40, software, FP32/TF32 precision,
 1024-sample frames, and batch sizes 32 and 256. Other frame lengths, batch

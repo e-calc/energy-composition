@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS kernel_energy (
     sm_clock_mhz_mean REAL, sm_clock_mhz_min REAL, sm_clock_mhz_max REAL, mem_clock_mhz_mean REAL,
     pstate_max INTEGER, temp_before REAL, temp_after REAL,
     measurement_duration_s REAL, cooldown_s REAL, num_warmup INTEGER, num_calibration INTEGER,
+    warmup_settle_s REAL,
     input_source TEXT, persistence_mode INTEGER,
     torch_version TEXT, ultralytics_version TEXT, zeus_version TEXT, driver_version TEXT,
     tf32_conv INTEGER, tf32_matmul INTEGER, measured_at TEXT, notes TEXT,
@@ -47,6 +48,7 @@ CREATE TABLE IF NOT EXISTS model_runs (
     sm_clock_mhz_mean REAL, sm_clock_mhz_min REAL, sm_clock_mhz_max REAL, mem_clock_mhz_mean REAL,
     pstate_max INTEGER, temp_before REAL, temp_after REAL,
     measurement_duration_s REAL, cooldown_s REAL, num_warmup INTEGER, num_calibration INTEGER,
+    warmup_settle_s REAL,
     persistence_mode INTEGER,
     torch_version TEXT, ultralytics_version TEXT, zeus_version TEXT, driver_version TEXT,
     tf32_conv INTEGER, tf32_matmul INTEGER, measured_at TEXT, notes TEXT,
@@ -105,6 +107,18 @@ def _migrate_model_kernels(conn: sqlite3.Connection) -> bool:
     return True
 
 
+# Columns added after the first schema: (table, column, type). NULL in old rows.
+ADDED_COLUMNS = (("kernel_energy", "warmup_settle_s", "REAL"), ("model_runs", "warmup_settle_s", "REAL"))
+
+
+def _add_columns(conn: sqlite3.Connection) -> None:
+    for table, col, typ in ADDED_COLUMNS:
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+        if cols and col not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+    conn.commit()
+
+
 def connect(path: str | Path) -> sqlite3.Connection:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), timeout=60)
@@ -112,6 +126,7 @@ def connect(path: str | Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     _migrate_model_kernels(conn)
     conn.executescript(SCHEMA)
+    _add_columns(conn)
     return conn
 
 
@@ -227,7 +242,7 @@ def model_composition_join(conn, model_name: str, gpu_name: str, freq_label: str
                mk.short_desc, mk.n_params,
                ke.energy_j, ke.time_s, ke.power_w, ke.energy_std_j, ke.time_std_s, ke.iterations, ke.n_repeats,
                ke.gpu_kernel_time_s, ke.sm_clock_mhz_mean, ke.input_source,
-               ke.measurement_duration_s, ke.cooldown_s, ke.num_warmup, ke.num_calibration
+               ke.measurement_duration_s, ke.cooldown_s, ke.num_warmup, ke.num_calibration, ke.warmup_settle_s
         FROM model_kernels mk
         LEFT JOIN kernel_energy ke
           ON ke.kernel_key = mk.kernel_key AND ke.gpu_name = ? AND ke.freq_label = ? AND ke.dtype = ?

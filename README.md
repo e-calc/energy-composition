@@ -25,8 +25,9 @@ RFML family (`--models rfml`, module level only): `rf_vgg` and `rf_resnet` (O'Sh
 is a top-level `ModuleList` run in order (11 / 10 / 3 components); for these models `--imgsz` and the DB `imgsz`
 column hold the IQ frame length (default 1024).
 
-Study reports with results: [docs/report_yolo26_a40.md](docs/report_yolo26_a40.md) (YOLO26),
-[docs/report_rfml_a40.md](docs/report_rfml_a40.md) (RFML, batch 32 and 256).
+Study reports with results: [docs/report_yolo26_a40.md](docs/report_yolo26_a40.md) (YOLO26; data and full report
+in [docs/data/yolo26/](docs/data/yolo26/)), [docs/report_rfml_a40.md](docs/report_rfml_a40.md) (RFML, batch 32 and
+256; data in [docs/data/rfml/](docs/data/rfml/)).
 
 ## Setup
 

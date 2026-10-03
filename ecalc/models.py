@@ -114,12 +114,24 @@ def precision_flags() -> dict:
     }
 
 
+def _zeus_version() -> str:
+    """``0.16.0``, or ``0.16.0+g796e8ada`` when installed from a git commit (unreleased features)."""
+    import json
+
+    v = md.version("zeus")
+    try:
+        commit = json.loads(md.distribution("zeus").read_text("direct_url.json") or "{}")["vcs_info"]["commit_id"]
+        return f"{v}+g{commit[:8]}"
+    except (KeyError, TypeError, ValueError):
+        return v
+
+
 def versions() -> dict:
     out = {
         "torch_version": torch.__version__,
         "cuda_version": torch.version.cuda,
         "ultralytics_version": md.version("ultralytics"),
-        "zeus_version": md.version("zeus"),
+        "zeus_version": _zeus_version(),
     }
     try:
         from .gpu import driver_version

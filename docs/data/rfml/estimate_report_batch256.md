@@ -1,11 +1,11 @@
-# Kernel-DB energy estimate, level=module (20261003-144117)
+# Kernel-DB energy estimate, level=module (20261003-192617)
 
 E_pred_sum = sum_k e_k = sum_k (e_k - P t_k) + P sum_k t_k ; E_pred_hybrid = sum_k (e_k - P t_k) + P T_e2e
 
 | model | P (W) | hits | keys | T_sum (us) | T_e2e (us) | T err | E_sum (mJ) | E_hyb (mJ) | E_e2e (mJ) | E err sum | E err hyb |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| rf_vgg | 89.7 | 11/11 | 11 | 2447.5 | 2281.5 | +7.3% | 648.319 | 633.424 | 610.695 | +6.2% | +3.7% |
-| rf_resnet | 89.7 | 10/10 | 10 | 4593.1 | 4250.7 | +8.1% | 1259.280 | 1228.566 | 1240.046 | +1.6% | -0.9% |
+| rf_vgg | 89.7 | 11/11 | 11 | 2434.1 | 2280.0 | +6.8% | 631.397 | 617.577 | 615.709 | +2.5% | +0.3% |
+| rf_resnet | 89.7 | 10/10 | 10 | 4590.1 | 4250.7 | +8.0% | 1258.694 | 1228.254 | 1240.046 | +1.5% | -1.0% |
 | rf_lstm | 89.7 | 3/3 | 3 | 17363.0 | 17368.6 | -0.0% | 5032.349 | 5032.851 | 5024.406 | +0.2% | +0.2% |
 
 - static_power[active_idle] = 89.70 W (n=20, settle=1.0s;std=1.206W;min=86.94;max=90.94)
@@ -17,33 +17,33 @@ E_pred_sum = sum_k e_k = sum_k (e_k - P t_k) + P sum_k t_k ; E_pred_hybrid = sum
 
 ```
 model=rf_vgg level=module gpu=A40 freq=default dtype=fp32 static=active_idle P=89.70 W  kernels hit 11/11 (11 unique keys)
-  T_sum   = 2447.5 us   T_e2e = 2281.5 us   err +7.3%
-  E_sum   = 648.319 mJ  (= sum e_k; dyn 428.781 + static 219.537)
-  E_hyb   = 633.424 mJ  (= sum E_dyn + P*T_e2e)
-  E_e2e   = 610.695 mJ   err sum +6.2%   err hybrid +3.7%
+  T_sum   = 2434.1 us   T_e2e = 2280.0 us   err +6.8%
+  E_sum   = 631.397 mJ  (= sum e_k; dyn 413.067 + static 218.330)
+  E_hyb   = 617.577 mJ  (= sum E_dyn + P*T_e2e)
+  E_e2e   = 615.709 mJ   err sum +2.5%   err hybrid +0.3%
 
 idx type      key                     us        mJ    dyn mJ       W  share  desc / shared
-  0 ConvPool  1fe06ba3d8b42abc     926.0   256.932   173.875   277.5  39.6%  ConvPool[2->64,p=448]@256x2x1024
-  1 ConvPool  088468d743c31d56     658.6   192.862   133.783   292.8  29.7%  ConvPool[64->64,p=12352]@256x64x512
-  2 ConvPool  d50af392910f52dc     340.3    95.713    65.191   281.3  14.8%  ConvPool[64->64,p=12352]@256x64x256
-  3 ConvPool  b3a023cc4873ba9d     184.4    48.869    32.329   265.0   7.5%  ConvPool[64->64,p=12352]@256x64x128
-  4 ConvPool  80d318443f60409a      78.5    20.148    13.105   256.6   3.1%  ConvPool[64->64,p=12352]@256x64x64
-  5 ConvPool  d407c38351df1fc7      76.6    12.636     5.765   165.0   1.9%  ConvPool[64->64,p=12352]@256x64x32
-  6 ConvPool  bd5780891a3ccaa2      76.1     9.879     3.050   129.8   1.5%  ConvPool[64->64,p=12352]@256x64x16
-  7 Flatten   46313e35239090f1       3.5     0.327     0.015    94.0   0.1%  Flatten[p=0]@256x64x8
-  8 DenseSELU a4048f70448fdfcc      38.6     4.337     0.872   112.3   0.7%  DenseSELU[512->128]@256x512  <- rf_resnet
-  9 DenseSELU 0c4ed5fdf55bd1ab      35.8     3.646     0.439   102.0   0.6%  DenseSELU[128->128]@256x128  <- rf_resnet
- 10 Classifier b82ca0bc94382ff6      29.1     2.970     0.357   101.9   0.5%  Classifier[128->24]@256x128  <- rf_resnet
+  0 ConvPool  1fe06ba3d8b42abc     925.9   248.286   165.235   268.2  39.3%  ConvPool[2->64,p=448]@256x2x1024
+  1 ConvPool  088468d743c31d56     658.6   188.600   129.528   286.4  29.9%  ConvPool[64->64,p=12352]@256x64x512
+  2 ConvPool  d50af392910f52dc     340.3    94.754    64.226   278.4  15.0%  ConvPool[64->64,p=12352]@256x64x256
+  3 ConvPool  b3a023cc4873ba9d     184.5    48.252    31.702   261.5   7.6%  ConvPool[64->64,p=12352]@256x64x128
+  4 ConvPool  80d318443f60409a      78.6    19.628    12.575   249.6   3.1%  ConvPool[64->64,p=12352]@256x64x64
+  5 ConvPool  d407c38351df1fc7      71.2    11.955     5.565   167.8   1.9%  ConvPool[64->64,p=12352]@256x64x32
+  6 ConvPool  bd5780891a3ccaa2      71.0     9.234     2.869   130.1   1.5%  ConvPool[64->64,p=12352]@256x64x16
+  7 Flatten   46313e35239090f1       3.5     0.322     0.011    93.0   0.1%  Flatten[p=0]@256x64x8
+  8 DenseSELU a4048f70448fdfcc      37.5     4.165     0.798   111.0   0.7%  DenseSELU[512->128]@256x512  <- rf_resnet
+  9 DenseSELU 0c4ed5fdf55bd1ab      34.4     3.363     0.278    97.8   0.5%  DenseSELU[128->128]@256x128  <- rf_resnet
+ 10 Classifier b82ca0bc94382ff6      28.5     2.839     0.280    99.5   0.4%  Classifier[128->24]@256x128  <- rf_resnet
 ```
 
 ## rf_resnet
 
 ```
 model=rf_resnet level=module gpu=A40 freq=default dtype=fp32 static=active_idle P=89.70 W  kernels hit 10/10 (10 unique keys)
-  T_sum   = 4593.1 us   T_e2e = 4250.7 us   err +8.1%
-  E_sum   = 1259.280 mJ  (= sum e_k; dyn 847.286 + static 411.994)
-  E_hyb   = 1228.566 mJ  (= sum E_dyn + P*T_e2e)
-  E_e2e   = 1240.046 mJ   err sum +1.6%   err hybrid -0.9%
+  T_sum   = 4590.1 us   T_e2e = 4250.7 us   err +8.0%
+  E_sum   = 1258.694 mJ  (= sum e_k; dyn 846.974 + static 411.720)
+  E_hyb   = 1228.254 mJ  (= sum E_dyn + P*T_e2e)
+  E_e2e   = 1240.046 mJ   err sum +1.5%   err hybrid -1.0%
 
 idx type      key                     us        mJ    dyn mJ       W  share  desc / shared
   0 ResidualStack 8f8af84f49daf4ef    2086.2   623.174   436.048   298.7  49.5%  ResidualStack[2->32,p=12512]@256x2x1024
@@ -53,9 +53,9 @@ idx type      key                     us        mJ    dyn mJ       W  share  des
   4 ResidualStack 593f480bb747b974     248.3    42.031    19.758   169.3   3.3%  ResidualStack[32->32,p=13472]@256x32x64
   5 ResidualStack f13292abaf4c5bc9     225.0    31.728    11.545   141.0   2.5%  ResidualStack[32->32,p=13472]@256x32x32
   6 Flatten   c4907177d0969c5c       3.5     0.328     0.014    93.8   0.0%  Flatten[p=0]@256x32x16
-  7 DenseSELU a4048f70448fdfcc      38.6     4.337     0.872   112.3   0.3%  DenseSELU[512->128]@256x512  <- rf_vgg
-  8 DenseSELU 0c4ed5fdf55bd1ab      35.8     3.646     0.439   102.0   0.3%  DenseSELU[128->128]@256x128  <- rf_vgg
-  9 Classifier b82ca0bc94382ff6      29.1     2.970     0.357   101.9   0.2%  Classifier[128->24]@256x128  <- rf_vgg
+  7 DenseSELU a4048f70448fdfcc      37.5     4.165     0.798   111.0   0.3%  DenseSELU[512->128]@256x512  <- rf_vgg
+  8 DenseSELU 0c4ed5fdf55bd1ab      34.4     3.363     0.278    97.8   0.3%  DenseSELU[128->128]@256x128  <- rf_vgg
+  9 Classifier b82ca0bc94382ff6      28.5     2.839     0.280    99.5   0.2%  Classifier[128->24]@256x128  <- rf_vgg
 ```
 
 ## rf_lstm

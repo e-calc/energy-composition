@@ -18,6 +18,10 @@ dependencies = [
 [dependency-groups]
 dev = ["pytest>=8"]
 
+[tool.uv.sources]
+# zeus master at the merge of ml-energy/zeus#263 (`warmup_settle_duration` in zeus.profile.measure); not in 0.16.0.
+zeus = { git = "https://github.com/ml-energy/zeus", rev = "796e8ada280ced0b31a11243cb8b2dae13f403d1" }
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

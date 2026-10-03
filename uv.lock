@@ -403,7 +403,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.6" },
     { name = "torchvision" },
     { name = "ultralytics", specifier = ">=8.4" },
-    { name = "zeus", specifier = ">=0.16" },
+    { name = "zeus", git = "https://github.com/ml-energy/zeus?rev=796e8ada280ced0b31a11243cb8b2dae13f403d1" },
 ]
 
 [package.metadata.requires-dev]
@@ -1861,7 +1861,7 @@ wheels = [
 [[package]]
 name = "zeus"
 version = "0.16.0"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/ml-energy/zeus?rev=796e8ada280ced0b31a11243cb8b2dae13f403d1#796e8ada280ced0b31a11243cb8b2dae13f403d1" }
 dependencies = [
     { name = "amdsmi" },
     { name = "httpx" },
@@ -1873,8 +1873,4 @@ dependencies = [
     { name = "rich" },
     { name = "scikit-learn" },
     { name = "tyro" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/b7/c6/fa05fff2236caba3f316b4305f726c85fe4d8bd76685e80d946ff0ada6ae/zeus-0.16.0.tar.gz", hash = "sha256:c77e3fec498fd7aea11ad081a723c1cc6cad9b670c6ebf47afd1b5ac5a6c5206", size = 234566, upload-time = "2026-07-07T20:40:43.045Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/1e/19/d19eaf4c5b58161df06ae58877dcbb1b1bb0bce0039b86a8f9a5d3c77a99/zeus-0.16.0-py3-none-any.whl", hash = "sha256:82f3a97a39c68040587a8d897cbd6c623aee5ad7e92c50ba9105a3e043a8df7c", size = 292207, upload-time = "2026-07-07T20:40:41.644Z" },
 ]

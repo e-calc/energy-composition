@@ -33,6 +33,9 @@ def add_measure_args(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--cooldown", type=float, default=3.0)
     ap.add_argument("--warmup", type=int, default=50)
     ap.add_argument("--calibration", type=int, default=1000)
+    ap.add_argument("--settle", type=float, default=None,
+                    help="run the workload this many seconds before each Zeus window (warmup_settle_duration; "
+                         "replaces --warmup for the trial) so the GPU reaches its thermal state")
     ap.add_argument("--lock-mhz", type=int, default=None, help="best-effort SM clock lock (needs root)")
     ap.add_argument("--strict-fp32", action="store_true", help="disable TF32 (dtype label fp32_strict)")
     ap.add_argument("--profile-kernel-time", action="store_true")
@@ -58,7 +61,7 @@ def parse_models(s: str) -> list[str]:
 def make_cfg(args) -> C.MeasureConfig:
     return C.MeasureConfig(
         measurement_duration_s=args.measurement_duration, cooldown_s=args.cooldown, num_warmup=args.warmup,
-        num_calibration=args.calibration, repeats=args.repeats, dtype=set_precision(args.strict_fp32),
+        num_calibration=args.calibration, warmup_settle_s=args.settle, repeats=args.repeats, dtype=set_precision(args.strict_fp32),
         profile_kernel_time=args.profile_kernel_time, lock_mhz=args.lock_mhz,
     )
 

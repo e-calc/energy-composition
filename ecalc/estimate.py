@@ -261,7 +261,7 @@ def _row_cost_s(r: dict) -> float | None:
     if r.get("measurement_duration_s") is None:
         return None
     n = r.get("n_repeats") or 1
-    per = (r["measurement_duration_s"] or 0) + (r["cooldown_s"] or 0)
+    per = (r["measurement_duration_s"] or 0) + (r["cooldown_s"] or 0) + (r.get("warmup_settle_s") or 0)
     if r.get("time_s") is not None:
         per += ((r.get("num_warmup") or 0) * 2 + (r.get("num_calibration") or 0)) * r["time_s"]
     return n * per
