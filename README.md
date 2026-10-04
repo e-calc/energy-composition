@@ -73,3 +73,7 @@ Outputs: `data/ecalc.sqlite` (tables `kernel_energy`, `static_power`, `model_run
     ecalc/estimate.py     composition, validation metrics, level comparison, markdown/CSV reports, plots
     scripts/              inspect_model, measure_static, build_kernel_db, measure_model_e2e, estimate_model, run_all.sh
     tests/                CPU tests + GPU consistency tests (`-m gpu`)
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
