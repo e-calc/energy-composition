@@ -145,7 +145,7 @@ def _summary_row(med: TrialStats, trials: list[TrialStats], cfg: MeasureConfig, 
         sm_clock_mhz_max=c.get("sm_clock_mhz_max"), mem_clock_mhz_mean=c.get("mem_clock_mhz_mean"),
         pstate_max=c.get("pstate_max"), temp_before=med.temp_before, temp_after=med.temp_after,
         measurement_duration_s=cfg.measurement_duration_s, cooldown_s=cfg.cooldown_s,
-        num_warmup=cfg.num_warmup, num_calibration=cfg.num_calibration,
+        num_warmup=cfg.num_warmup, num_calibration=cfg.num_calibration, warmup_settle_s=cfg.warmup_settle_s,
         persistence_mode=int(persistence_mode_on(handle)),
         measured_at=now, notes=None,
     )

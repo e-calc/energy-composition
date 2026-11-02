@@ -1,8 +1,8 @@
 # Composing GPU inference energy from a per-kernel database: YOLO26 on an NVIDIA A40
 
 Study report. Code: this repository (`ecalc/`, `scripts/`). Raw data behind every
-number in this report is in [`docs/data/`](data/) (CSV exports of the SQLite database) and the full
-per-layer report in [`docs/data/estimate_report_full.md`](data/estimate_report_full.md).
+number in this report is in [`docs/data/yolo26/`](./) (CSV exports of the SQLite database) and the full
+per-layer report in [`docs/data/yolo26/estimate_report_full.md`](estimate_report_full.md).
 
 ## 1. Goal
 
@@ -90,7 +90,7 @@ Three definitions are stored in the `static_power` table; `active_idle` is the o
 | `post_burst` | 100.4 W (std 17 W, max 156 W) | same but a 0.2 s window opened immediately after the burst; includes the decaying transient. |
 | `p8_idle` | 23.4 W | raw NVML energy counter, three 10 s windows, taken in a process that holds no CUDA context so the GPU actually reaches P8 / 210 MHz. |
 
-Why the settle delay: a 5 s power trace after a burst (`docs/data/decay_A40.csv`) shows the GPU stays at P0 /
+Why the settle delay: a 5 s power trace after a burst ([`docs/data/yolo26/decay_A40.csv`](decay_A40.csv)) shows the GPU stays at P0 /
 1740 MHz for the whole trace while the process holds its CUDA context, but the reported power decays from ~110 W
 to a plateau of ~80-88 W over about 1 s. Reading immediately after the burst therefore mixes the transient in. The
 plateau itself depends on temperature: 84.8 W on a cool GPU in a smoke run, 89.7 W after 40 minutes of measuring.
@@ -174,7 +174,7 @@ its power is mostly the static floor. yolo26x is at the 300 W power cap for the 
 | yolo26l | 2414 mJ | 2450 mJ | **+1.5%** | 1444 mJ | 2331 mJ | -3.4% | +13.5% |
 | yolo26x | 3788 mJ | 3897 mJ | **+2.9%** | 2596 mJ | 3729 mJ | -1.6% | +14.9% |
 
-![composed vs measured](estimate_yolo26_a40.png)
+![composed vs measured](../../figures/estimate_yolo26_a40_batch1.png)
 
 Left: stacked Σ E_dyn (orange) + P·Σ t_k (grey) against the measured end-to-end energy (black tick). Right: Σ t_k
 against T_e2e.
@@ -212,8 +212,8 @@ The whole pipeline was repeated at batch 8 (`BATCH=8 SKIP_STATIC=1 scripts/run_a
 dimension is part of the kernel signature, so this added 96 new kernel rows (49.7 min, none shared with batch 1)
 and five new `model_runs` rows; the static-power rows from Section 2.4 were reused unchanged. Everything else
 (protocol, 3 repeats, 5 s windows, profiler pass after the Zeus measurements) is identical to the batch-1 run.
-Data: [`docs/data/per_layer_estimate_batch8.csv`](data/per_layer_estimate_batch8.csv),
-[`docs/data/estimate_report_full_batch8.md`](data/estimate_report_full_batch8.md); rows with `batch = 8` in
+Data: [`docs/data/yolo26/per_layer_estimate_batch8.csv`](per_layer_estimate_batch8.csv),
+[`docs/data/yolo26/estimate_report_full_batch8.md`](estimate_report_full_batch8.md); rows with `batch = 8` in
 `model_runs.csv` / `model_kernels.csv`.
 
 **Ground truth and pure database prediction (Σ e_k), batch 1 vs batch 8**
@@ -233,7 +233,7 @@ Data: [`docs/data/per_layer_estimate_batch8.csv`](data/per_layer_estimate_batch8
 | mean abs error | 1 | | | | | 11.1% | 2.4% |
 | | 8 | | | | | 2.2% | 0.9% |
 
-![composed vs measured, batch 8](estimate_yolo26_a40_batch8.png)
+![composed vs measured, batch 8](../../figures/estimate_yolo26_a40_batch8.png)
 
 **E_hyb error under each static-power definition** (mean absolute / worst case over the five sizes):
 
@@ -330,14 +330,14 @@ sums (0.96-0.99x), which improves the m/l/x estimates that the module level over
 sum overshoots more than at module level (+18 to +26 % for m/l/x), so `E_hyb`, which subtracts P·Σt_k and adds
 P·T_e2e, drifts to -5 to -7.5 % for m/l/x: at leaf level `E_sum` is the estimator to use.
 
-![leaf vs module composition](compare_levels_yolo26_a40.png)
+![leaf vs module composition](../../figures/compare_levels_yolo26_a40_batch1.png)
 
 Left: per composite layer of yolo26n, deviation of the sum of its leaf rows from the module-level row (energy and
 time). Middle: `E_sum` error per size at both levels. Right: unique kernel rows per size.
 
 **Per-block validation.** Summing the leaf rows of each composite layer and comparing with the module-level row
 of the same layer isolates what the finer composition misses, before it is averaged into a whole-model number
-(full tables for all sizes: [data/compare_levels_b1.md](data/compare_levels_b1.md)):
+(full tables for all sizes: [compare_levels_b1.md](compare_levels_b1.md)):
 
 | layer (yolo26n) | leaves + ops | E_leaf / E_mod | t_leaf / t_mod | GPU-time ratio |
 |---|---|---|---|---|
@@ -407,8 +407,8 @@ slightly faster and at lower power than inside the block, because its input neve
 launch-overlap overshoot, which carries extra P·t; at batch 8 it is the whole error. It is reproducible (the
 same blocks are low at both batch sizes, e.g. the attention C3k2 L22 is at 0.89-0.93 at batch 1 and 0.89-0.98 at
 batch 8) and therefore correctable, but the correction is a per-block quantity that the module level measures directly. Full batch-8
-tables: [data/compare_levels_b8.md](data/compare_levels_b8.md), figure
-[compare_levels_yolo26_a40_batch8.png](compare_levels_yolo26_a40_batch8.png).
+tables: [compare_levels_b8.md](compare_levels_b8.md), figure
+[compare_levels_yolo26_a40_batch8.png](../../figures/compare_levels_yolo26_a40_batch8.png).
 
 ## 5. Findings
 

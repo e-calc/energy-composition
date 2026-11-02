@@ -18,7 +18,7 @@ from _common import Session, add_level_arg, add_measure_args, add_model_args, pa
 from ecalc import config as C, db
 from ecalc.capture import capture, model_composition
 from ecalc.measure import gpu_kernel_time, kernel_target, make_monitor, measure_kernel
-from ecalc.models import load_fused_model, make_input, variant_name
+from ecalc.models import load_model, model_input, variant_name
 
 
 def main() -> None:
@@ -34,7 +34,6 @@ def main() -> None:
     s = Session(args, "build_kernel_db")
     conn = db.connect(args.db)
     monitor = make_monitor(args.device)
-    x = make_input(s.device, shape=s.input_shape)
     done_this_run: set[str] = set()
     only = {int(i) for i in args.layers.split(",")} if args.layers else None
     t_start = time.time()
@@ -43,15 +42,17 @@ def main() -> None:
     try:
         for name in parse_models(args.models):
             vname = variant_name(name, not args.one2many)
-            det = load_fused_model(name, s.device, end2end=not args.one2many)
+            size = s.size_for(name)
+            det = load_model(name, s.device, end2end=not args.one2many)
+            x = model_input(name, s.batch, size, s.device)
             recs = capture(det, x, level=args.level)
-            db.replace_model_kernels(conn, vname, s.cfg.dtype, s.batch, s.imgsz,
-                                     model_composition(recs, vname, s.cfg.dtype, s.batch, s.imgsz,
+            db.replace_model_kernels(conn, vname, s.cfg.dtype, s.batch, size,
+                                     model_composition(recs, vname, s.cfg.dtype, s.batch, size,
                                                        s.meta["versions"]["ultralytics_version"]),
                                      level=args.level)
             todo = [r for r in recs if (only is None or r.parent_layer_idx in only)]
             n_uniq = len({r.kernel_key for r in recs})
-            s.log(f"== {vname} (batch {s.batch}, {s.imgsz}px, level {args.level}): {len(recs)} kernels captured, "
+            s.log(f"== {vname} (batch {s.batch}, size {size}, level {args.level}): {len(recs)} kernels captured, "
                   f"{n_uniq} unique")
             for r in todo:
                 if r.kernel_key in done_this_run:

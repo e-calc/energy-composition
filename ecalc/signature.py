@@ -43,6 +43,17 @@ ATTR_WHITELIST: dict[str, tuple[str, ...]] = {
     "C3k2": ("c",),
     "C2PSA": ("c",),
     "SiLU": (),
+    # RFML (ecalc.rfml) building blocks; no YOLO26 module contains these classes.
+    "Conv1d": ("in_channels", "out_channels", "kernel_size", "stride", "padding", "dilation", "groups"),
+    "MaxPool1d": ("kernel_size", "stride", "padding", "dilation"),
+    "Linear": ("in_features", "out_features"),
+    "LSTM": ("input_size", "hidden_size", "num_layers", "bias", "batch_first", "dropout", "bidirectional",
+             "proj_size"),
+    "ReLU": (),
+    "SELU": (),
+    "Softmax": ("dim",),
+    "Flatten": ("start_dim", "end_dim"),
+    "AlphaDropout": ("p",),
     "Identity": (),
     "Sequential": (),
     "ModuleList": (),
@@ -161,7 +172,9 @@ def short_desc(sig: dict) -> str:
     mod = sig["module"]
     cls = mod["cls"]
     mods = mod["modules"]
-    convs = [m for m in mods if m["cls"] == "Conv2d"]
+    convs = [m for m in mods if m["cls"] in ("Conv2d", "Conv1d")]
+    linears = [m for m in mods if m["cls"] == "Linear"]
+    lstms = [m for m in mods if m["cls"] == "LSTM"]
     nparam = sum(int(torch.Size(p["s"]).numel()) for p in mod["params"])
     top = mods[0]["a"] if mods else {}
     if cls == "Conv" and convs:
@@ -177,6 +190,10 @@ def short_desc(sig: dict) -> str:
         inner = f"nc={top.get('nc')},{'e2e' if top.get('end2end') else 'o2m'}"
     elif convs:
         inner = f"{convs[0]['a']['in_channels']}->{convs[-1]['a']['out_channels']},p={nparam}"
+    elif lstms:
+        inner = f"{lstms[0]['a']['input_size']}->{lstms[-1]['a']['hidden_size']}"
+    elif linears:
+        inner = f"{linears[0]['a']['in_features']}->{linears[-1]['a']['out_features']}"
     else:
         inner = f"p={nparam}"
     return f"{cls}[{inner}]@{shape}"

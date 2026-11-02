@@ -6,4 +6,5 @@ __pycache__/
 data/weights/
 data/*.sqlite*
 data/export/
+data/engines/
 results/

@@ -45,6 +45,7 @@ class MeasureConfig:
     cooldown_s: float = 3.0
     num_warmup: int = 50
     num_calibration: int = 1000
+    warmup_settle_s: float | None = None  # run the workload this long before each window (replaces num_warmup)
     repeats: int = 1
     clock_sample_period_s: float = 0.05
     dtype: str = "fp32"          # "fp32" (TF32 allowed, Ampere default) or "fp32_strict"
@@ -53,12 +54,15 @@ class MeasureConfig:
     lock_mhz: int | None = None
 
     def zeus_kwargs(self) -> dict:
-        return dict(
+        kw = dict(
             measurement_duration=self.measurement_duration_s,
             cooldown_duration=self.cooldown_s,
             num_warmup_iterations=self.num_warmup,
             num_calibration_iterations=self.num_calibration,
         )
+        if self.warmup_settle_s is not None:  # zeus >= ml-energy/zeus#263
+            kw["warmup_settle_duration"] = self.warmup_settle_s
+        return kw
 
 
 def ensure_dirs() -> None:

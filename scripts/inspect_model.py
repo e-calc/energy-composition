@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Capture kernels of YOLO26 models (no energy measurement) at module or leaf level and print
+"""Capture kernels of YOLO26 or RFML models (no energy measurement) at module or leaf level and print
 the kernel table, per-class instance/unique counts and key reuse across models."""
 
 from __future__ import annotations
@@ -15,25 +15,27 @@ import torch  # noqa: E402
 
 from ecalc import config as C  # noqa: E402
 from ecalc.capture import capture, final_output, unique_records  # noqa: E402
-from ecalc.models import ALL_MODELS, load_fused_model, make_input, set_precision, variant_name  # noqa: E402
+from ecalc.models import load_model, model_input, parse_model_list, set_precision, variant_name  # noqa: E402
 from ecalc.signature import flatten_tensors  # noqa: E402
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--models", default="yolo26n", help="comma list or 'all'")
+    ap.add_argument("--models", default="yolo26n", help="comma list, 'all' (YOLO26) or 'rfml'")
+    ap.add_argument("--batch", type=int, default=C.BATCH)
+    ap.add_argument("--imgsz", type=int, default=None, help="YOLO image size or RFML frame length (family default)")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--one2many", action="store_true", help="use the one-to-many head (needs external NMS)")
     ap.add_argument("--level", choices=list(C.LEVELS), default="module")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
     set_precision(False)
-    names = ALL_MODELS if args.models == "all" else args.models.split(",")
-    x = make_input(args.device)
+    names = parse_model_list(args.models)
     key_models: dict[str, set[str]] = defaultdict(set)
     key_desc: dict[str, str] = {}
     for name in names:
-        det = load_fused_model(name, args.device, end2end=not args.one2many)
+        det = load_model(name, args.device, end2end=not args.one2many)
+        x = model_input(name, args.batch, args.imgsz, args.device)
         vname = variant_name(name, not args.one2many)
         recs = capture(det, x, level=args.level)
         out = final_output(det, x)
