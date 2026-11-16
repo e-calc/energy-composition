@@ -13,12 +13,18 @@ every executed op is recorded exactly once, in execution order.
 ``capture_sequential`` (level "module") handles models whose forward runs a top-level
 ``layers`` ModuleList in order (``ecalc.rfml.SequentialRFModel``): each entry gets the
 previous entry's output.
+
+``backward_records`` turns a module-level forward capture into the kernels of the backward
+pass: every layer in the backward direction, plus one ``add`` per extra consumer of a layer's
+output (autograd sums the gradients arriving at a tensor that feeds several layers).
+``BackwardGraph`` holds one retained autograd graph and replays its backward pass.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import datetime as _dt
+import functools
 import json
 from typing import Any, Callable
 
@@ -26,10 +32,15 @@ import torch
 from torch import nn
 from torch.overrides import TorchFunctionMode
 
-from .signature import input_signature, kernel_key, kernel_signature, op_signature, output_specs, short_desc
+from .calculus.kernel import BACKWARD, FORWARD
+from .signature import (backward_signature, flatten_tensors, input_signature, kernel_key, kernel_signature,
+                        op_signature, output_specs, short_desc)
 
 
-def _leaf_classes() -> tuple[type, ...]:
+@functools.cache
+def leaf_classes() -> tuple[type, ...]:
+    """Leaf module classes of the YOLO26 graph. Imported on first use, so RFML-only work does not
+    need Ultralytics."""
     from ultralytics.nn.modules.block import Attention
     from ultralytics.nn.modules.conv import Concat, Conv
     from ultralytics.nn.modules.head import Detect
@@ -38,7 +49,11 @@ def _leaf_classes() -> tuple[type, ...]:
     return (Conv, Concat, Attention, Detect, nn.MaxPool2d, nn.Upsample)
 
 
-LEAF_CLASSES: tuple[type, ...] = _leaf_classes()
+def __getattr__(name: str):
+    if name == "LEAF_CLASSES":  # kept for callers of the former module constant
+        return leaf_classes()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 # Functional ops that appear between leaves in YOLO26 blocks. Anything else seen outside a leaf
 # is an error: the composition would be incomplete.
@@ -62,6 +77,8 @@ class LayerRecord:
     path: str = ""
     seq: int | None = None
     op: dict | None = None  # {"name", "args", "kwargs", "seq_input"} for functional ops
+    direction: str = FORWARD
+    input_gradient: bool = True  # backward only: is the gradient with respect to the inputs computed
 
     @property
     def n_params(self) -> int:
@@ -78,7 +95,9 @@ class LayerRecord:
         return fn(*lead, *self.op["args"], **self.op["kwargs"])
 
     def target(self, inputs=None) -> Callable[[], None]:
-        """Measurement closure (inference mode, no return value)."""
+        """Forward measurement closure (inference mode, no return value)."""
+        if self.direction != FORWARD:
+            raise ValueError(f"{self.short_desc}: target() is the forward closure; use backward_graph()")
         inputs = self.inputs if inputs is None else inputs
         inference = torch.inference_mode()
         run = self.run
@@ -88,6 +107,103 @@ class LayerRecord:
                 run(inputs)
 
         return fn
+
+    def backward_graph(self, inputs=None) -> "BackwardGraph":
+        """Retained autograd graph of this kernel; its ``step`` is the backward measurement closure."""
+        inputs = self.inputs if inputs is None else inputs
+        modules = list(self.module.modules()) if self.module is not None else []
+        parameters = list(self.module.parameters()) if self.module is not None else []
+        return BackwardGraph(self.run, inputs, parameters, modules, input_gradient=self.input_gradient)
+
+
+def differentiable_outputs(output: Any) -> list[torch.Tensor]:
+    """The tensors a backward pass starts from. For an output that carries raw head tensors in a
+    dict next to a decoded result (Ultralytics ``Detect`` in eval mode), only the raw tensors."""
+    def in_dicts(obj: Any) -> list[torch.Tensor]:
+        if isinstance(obj, dict):
+            return flatten_tensors(obj)
+        if isinstance(obj, (list, tuple)):
+            return [t for o in obj for t in in_dicts(o)]
+        return []
+
+    tensors = in_dicts(output) or flatten_tensors(output)
+    return [t for t in tensors if t.is_floating_point() and t.requires_grad]
+
+
+def _replace_inference_tensors(modules: list) -> None:
+    """Swap tensors a module cached during an inference-mode run (``Detect`` anchors and strides)
+    for ordinary copies with the same values, so autograd can track computations that use them."""
+    for m in modules:
+        for name, value in list(vars(m).items()):
+            if isinstance(value, torch.Tensor) and value.is_inference():
+                setattr(m, name, value.clone())
+        for name, value in list(m._buffers.items()):
+            if value is not None and value.is_inference():
+                m._buffers[name] = value.clone()
+
+
+class BackwardGraph:
+    """One retained autograd graph; ``step()`` replays its backward pass.
+
+    The forward runs once, with gradients enabled, on fresh copies of the inputs. ``step`` is
+    ``torch.autograd.grad(outputs, inputs + parameters, grad_outputs, retain_graph=True)``: the
+    gradient kernels only, with no loss, no ``.grad`` accumulation and no optimizer. ``close``
+    restores the parameter flags and module modes it changed.
+
+    Recurrent layers are switched to train mode while the graph is alive, because cuDNN refuses
+    a recurrent backward in eval mode. Their dropout is left as configured.
+    """
+
+    def __init__(self, run: Callable, inputs, parameters: list, modules: list, input_gradient: bool = True,
+                 seed: int = 0) -> None:
+        _replace_inference_tensors(modules)
+        self._restore_eval = [m for m in modules if isinstance(m, nn.RNNBase) and not m.training]
+        for m in self._restore_eval:
+            m.train()
+        self._restore_frozen = [p for p in parameters if not p.requires_grad]
+        for p in self._restore_frozen:
+            p.requires_grad_(True)
+        single = isinstance(inputs, torch.Tensor)
+        # Captured inputs are inference tensors; clone them outside inference mode so autograd can use them.
+        leaves = [t.detach().clone().requires_grad_(input_gradient) for t in ([inputs] if single else inputs)]
+        try:
+            with torch.enable_grad():
+                output = run(leaves[0] if single else leaves)
+            self.outputs = differentiable_outputs(output)
+            if not self.outputs:
+                raise RuntimeError("the kernel has no differentiable output")
+            generator = torch.Generator(device="cpu").manual_seed(seed)
+            self.grad_outputs = [torch.randn(tuple(o.shape), generator=generator, dtype=o.dtype).to(o.device)
+                                 for o in self.outputs]
+            self.wrt = [t for t in leaves if t.requires_grad] + list(parameters)
+            if not self.wrt:
+                raise RuntimeError("nothing to differentiate with respect to: no input gradient and no parameters")
+        except Exception:
+            self.close()
+            raise
+
+    def step(self) -> None:
+        torch.autograd.grad(self.outputs, self.wrt, self.grad_outputs, retain_graph=True, allow_unused=True)
+
+    def close(self) -> None:
+        self.outputs = self.grad_outputs = self.wrt = None
+        for p in self._restore_frozen:
+            p.requires_grad_(False)
+        for m in self._restore_eval:
+            m.eval()
+        self._restore_frozen, self._restore_eval = [], []
+
+    def __enter__(self) -> "BackwardGraph":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+def model_backward_graph(model: nn.Module, x: torch.Tensor) -> BackwardGraph:
+    """Backward pass of the whole model: gradients of its raw outputs with respect to every
+    parameter (the model input needs no gradient)."""
+    return BackwardGraph(model, x, list(model.parameters()), list(model.modules()), input_gradient=False)
 
 
 def _clone(x):
@@ -118,14 +234,15 @@ def capture_layers(det: nn.Module, x: torch.Tensor, record: bool = True) -> list
         out = m(inp)
         y.append(out if m.i in det.save else None)
         if record:
-            sig = kernel_signature(m, inp)
+            kept = _clone(inp)  # the tensors the kernel is measured on; their layout is what gets recorded
+            sig = kernel_signature(m, kept)
             records.append(LayerRecord(
                 layer_idx=int(m.i),
                 layer_type=type(m).__name__,
                 from_idx=m.f,
                 module=m,
-                inputs=_clone(inp),
-                input_sig=input_signature(inp),
+                inputs=kept,
+                input_sig=input_signature(kept),
                 output_specs=output_specs(out),
                 signature=sig,
                 kernel_key=kernel_key(sig),
@@ -190,7 +307,7 @@ class _OpRecorder(TorchFunctionMode):
 def _leaf_hooks(top: nn.Module, state: _LeafState) -> list:
     handles = []
     for name, sub in top.named_modules():
-        if not isinstance(sub, LEAF_CLASSES):
+        if not isinstance(sub, leaf_classes()):
             continue
 
         def pre(mod, args, _name=name):
@@ -270,10 +387,11 @@ def capture_sequential(model: nn.Module, x: torch.Tensor, record: bool = True) -
     for i, m in enumerate(model.layers):
         out = m(cur)
         if record:
-            sig = kernel_signature(m, cur)
+            kept = _clone(cur)
+            sig = kernel_signature(m, kept)
             records.append(LayerRecord(
-                layer_idx=i, layer_type=type(m).__name__, from_idx=-1, module=m, inputs=_clone(cur),
-                input_sig=input_signature(cur), output_specs=output_specs(out), signature=sig,
+                layer_idx=i, layer_type=type(m).__name__, from_idx=-1, module=m, inputs=kept,
+                input_sig=input_signature(kept), output_specs=output_specs(out), signature=sig,
                 kernel_key=kernel_key(sig), short_desc=short_desc(sig), level="module",
                 parent_layer_idx=i, path="", seq=i,
             ))
@@ -281,18 +399,84 @@ def capture_sequential(model: nn.Module, x: torch.Tensor, record: bool = True) -
     return records
 
 
-def capture(det: nn.Module, x: torch.Tensor, level: str = "module") -> list[LayerRecord]:
+def capture(det: nn.Module, x: torch.Tensor, level: str = "module", direction: str = FORWARD) -> list[LayerRecord]:
+    """Kernels of ``det`` on input ``x``: the forward pass, or (module level only) the backward pass."""
     from .rfml import SequentialRFModel
 
+    if direction not in (FORWARD, BACKWARD):
+        raise ValueError(f"unknown direction {direction!r}")
+    if direction == BACKWARD and level != "module":
+        raise ValueError("the backward pass is captured at module level only")
     if isinstance(det, SequentialRFModel):
         if level != "module":
             raise ValueError(f"level {level!r} is not implemented for RFML models (module level only)")
-        return capture_sequential(det, x)
-    if level == "module":
-        return capture_layers(det, x)
-    if level == "leaf":
-        return capture_leaves(det, x)
-    raise ValueError(f"unknown level {level!r}")
+        records = capture_sequential(det, x)
+    elif level == "module":
+        records = capture_layers(det, x)
+    elif level == "leaf":
+        records = capture_leaves(det, x)
+    else:
+        raise ValueError(f"unknown level {level!r}")
+    return backward_records(records) if direction == BACKWARD else records
+
+
+def consumer_counts(records: list[LayerRecord]) -> dict[int, int]:
+    """How many layers consume each layer's output, from the ``from`` indices of a module-level
+    capture. The model input (source index -1 of the first layer) is not counted."""
+    position = {r.layer_idx: n for n, r in enumerate(records)}
+    counts: dict[int, int] = {}
+    for n, r in enumerate(records):
+        sources = r.from_idx if isinstance(r.from_idx, (list, tuple)) else [r.from_idx]
+        for source in sources:
+            if source < 0:
+                if n + source < 0:
+                    continue  # the model input
+                source = records[n + source].layer_idx
+            if source not in position:
+                raise ValueError(f"layer {r.layer_idx} reads from unknown layer {source}")
+            counts[source] = counts.get(source, 0) + 1
+    return counts
+
+
+def backward_records(records: list[LayerRecord]) -> list[LayerRecord]:
+    """Kernels of the backward pass of a module-level forward capture.
+
+    Each layer becomes the same kernel in the backward direction (its own key). The first layer
+    reads the model input, which needs no gradient, and that is part of its key. A layer whose
+    output feeds ``n`` layers adds ``n - 1`` gradient accumulations, each priced as an ``add``
+    of two tensors of that output's shape. Order: last layer first.
+    """
+    if any(r.level != "module" for r in records):
+        raise ValueError("the backward pass is captured at module level only")
+    out: list[LayerRecord] = []
+    for n, r in reversed(list(enumerate(records))):
+        input_gradient = n > 0
+        sig = backward_signature(r.signature, input_gradient)
+        out.append(dataclasses.replace(r, signature=sig, kernel_key=kernel_key(sig), short_desc=short_desc(sig),
+                                       direction=BACKWARD, input_gradient=input_gradient))
+    by_index = {r.layer_idx: r for r in records}
+    next_index = max(by_index) + 1
+    for source, count in sorted(consumer_counts(records).items()):
+        if count < 2:
+            continue
+        producer = by_index[source]
+        if len(producer.output_specs) != 1:
+            raise ValueError(f"layer {source} feeds {count} layers but has {len(producer.output_specs)} outputs")
+        spec = producer.output_specs[0]
+        device = flatten_tensors(producer.inputs)[0].device
+        generator = torch.Generator(device="cpu").manual_seed(source)
+        dtype = getattr(torch, spec["dtype"])
+        tensors = [torch.randn(tuple(spec["shape"]), generator=generator, dtype=dtype).to(device) for _ in range(2)]
+        sig = op_signature("add", tensors, [], {})
+        for _ in range(count - 1):
+            out.append(LayerRecord(
+                layer_idx=next_index, layer_type="op:add", from_idx=source, module=None, inputs=tensors,
+                input_sig=sig["input"], output_specs=[dict(spec)], signature=sig, kernel_key=kernel_key(sig),
+                short_desc=short_desc(sig), level="module", parent_layer_idx=source, path="gradient_accumulation",
+                seq=next_index, op=dict(name="add", args=[], kwargs={}, seq_input=False),
+            ))
+            next_index += 1
+    return out
 
 
 def final_output(det: nn.Module, x: torch.Tensor) -> Any:
@@ -305,10 +489,12 @@ def model_composition(records: list[LayerRecord], model_name: str, dtype: str, b
     """Rows for the ``model_kernels`` table (``layer_idx`` = graph index at module level, execution
     index at leaf level)."""
     now = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+    direction = BACKWARD if any(r.direction == BACKWARD for r in records) else FORWARD
     return [
         dict(
-            model_name=model_name, dtype=dtype, batch=batch, imgsz=imgsz, level=r.level, layer_idx=r.layer_idx,
-            parent_layer_idx=r.parent_layer_idx, path=r.path,
+            model_name=model_name, dtype=dtype, batch=batch, imgsz=imgsz, level=r.level, direction=direction,
+            layer_idx=r.layer_idx, parent_layer_idx=r.parent_layer_idx, path=r.path,
+            signature_json=json.dumps(r.signature, sort_keys=True),
             layer_type=r.layer_type, from_json=json.dumps(r.from_idx), kernel_key=r.kernel_key,
             short_desc=r.short_desc, input_spec_json=json.dumps(r.input_sig),
             output_spec_json=json.dumps(r.output_specs), n_params=r.n_params,

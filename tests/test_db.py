@@ -88,7 +88,8 @@ def test_migration_from_v1_schema(tmp_path):
     assert "level" in cols and "parent_layer_idx" in cols and "path" in cols
     rows = conn.execute("SELECT level, layer_idx, parent_layer_idx, kernel_key FROM model_kernels").fetchall()
     assert [tuple(r) for r in rows] == [("module", 7, 7, "k7")]
-    assert db.PK["model_kernels"] == ("model_name", "dtype", "batch", "imgsz", "level", "layer_idx")
+    assert db.PK["model_kernels"] == ("model_name", "dtype", "batch", "imgsz", "level", "direction", "layer_idx")
+    assert conn.execute("SELECT direction FROM model_kernels").fetchone()[0] == "forward"
     # idempotent
     conn.close()
     conn = db.connect(p)
@@ -108,3 +109,82 @@ def test_levels_are_independent(tmp_path):
     assert [r["layer_idx"] for r in j] == [0, 1] and j[0]["parent_layer_idx"] == 0 and j[1]["path"] == "p1"
     assert db.models_using_key(conn, "leaf1", "leaf") == ["m"] and db.models_using_key(conn, "leaf1", "module") == []
     assert db.list_models(conn, "module") == ["m"]
+
+
+_BEFORE_DIRECTION_SCHEMA = """
+CREATE TABLE model_runs (
+    model_name TEXT NOT NULL, gpu_name TEXT NOT NULL, freq_label TEXT NOT NULL, dtype TEXT NOT NULL,
+    batch INTEGER NOT NULL, imgsz INTEGER NOT NULL, energy_j REAL, time_s REAL,
+    PRIMARY KEY (model_name, gpu_name, freq_label, dtype, batch, imgsz)
+);
+CREATE TABLE model_kernels (
+    model_name TEXT NOT NULL, dtype TEXT NOT NULL, batch INTEGER NOT NULL, imgsz INTEGER NOT NULL,
+    level TEXT NOT NULL DEFAULT 'module', layer_idx INTEGER NOT NULL, parent_layer_idx INTEGER, path TEXT,
+    layer_type TEXT, from_json TEXT, kernel_key TEXT NOT NULL, short_desc TEXT,
+    input_spec_json TEXT, output_spec_json TEXT, n_params INTEGER, ultralytics_version TEXT, captured_at TEXT,
+    PRIMARY KEY (model_name, dtype, batch, imgsz, level, layer_idx)
+);
+CREATE INDEX idx_model_kernels_key ON model_kernels(kernel_key);
+"""
+
+
+def test_migration_adds_direction_to_the_keys(tmp_path):
+    import sqlite3
+
+    p = tmp_path / "old.sqlite"
+    c = sqlite3.connect(p)
+    c.executescript(_BEFORE_DIRECTION_SCHEMA)
+    c.execute("INSERT INTO model_runs VALUES ('m', 'A40', 'default', 'fp32', 1, 640, 0.7, 0.006)")
+    c.execute("INSERT INTO model_kernels (model_name, dtype, batch, imgsz, level, layer_idx, layer_type, kernel_key) "
+              "VALUES ('m', 'fp32', 1, 640, 'module', 0, 'Conv', 'k0')")
+    c.commit()
+    c.close()
+    for _ in range(2):  # idempotent
+        conn = db.connect(p)
+        assert db.get_model_run(conn, "m", "A40", "default", "fp32", 1, 640)["energy_j"] == 0.7
+        assert db.get_model_run(conn, "m", "A40", "default", "fp32", 1, 640, "backward") is None
+        assert [r["direction"] for r in db.model_composition_join(conn, "m", "A40", "default", "fp32", 1, 640)] == ["forward"]
+        assert "signature_json" in db.columns(conn, "model_kernels")
+        conn.close()
+
+
+def test_directions_are_independent(tmp_path):
+    conn = db.connect(tmp_path / "t.sqlite")
+    db.replace_model_kernels(conn, "m", "fp32", 1, 640, _comp("module", 3))
+    backward = [dict(r, kernel_key=f"b{r['layer_idx']}") for r in _comp("module", 4)]
+    db.replace_model_kernels(conn, "m", "fp32", 1, 640, backward, direction="backward")
+    assert len(db.model_composition_join(conn, "m", "A40", "default", "fp32", 1, 640)) == 3
+    rows = db.model_composition_join(conn, "m", "A40", "default", "fp32", 1, 640, direction="backward")
+    assert [r["kernel_key"] for r in rows] == ["b0", "b1", "b2", "b3"]
+    for direction, energy in (("forward", 1.0), ("backward", 2.5)):
+        db.upsert_model_run(conn, dict(model_name="m", gpu_name="A40", freq_label="default", dtype="fp32", batch=1,
+                                       imgsz=640, direction=direction, energy_j=energy, time_s=0.01))
+    assert db.get_model_run(conn, "m", "A40", "default", "fp32", 1, 640)["energy_j"] == 1.0
+    assert db.get_model_run(conn, "m", "A40", "default", "fp32", 1, 640, "backward")["energy_j"] == 2.5
+
+
+def test_store_as_a_signature_database(tmp_path):
+    from ecalc.calculus import KernelSpecification, Platform, evaluate, load
+
+    signature = {"sig_version": 1, "op": {"name": "add", "args": [], "kwargs": {}},
+                 "input": {"kind": "list", "items": [{"shape": [1, 4], "dtype": "float32"}] * 2}}
+    key = KernelSpecification.from_signature(signature).key
+    conn = db.connect(tmp_path / "t.sqlite")
+    db.upsert_kernel(conn, dict(_kernel_row(key, e=0.5), signature_json=json.dumps(signature)))
+    db.upsert_kernel(conn, _kernel_row("legacy", e=1.0))  # its stored structure does not hash to its key
+    db.upsert_static(conn, dict(gpu_name="A40", freq_label="default", method="active_idle", power_w=90.0))
+    rows = [dict(r, kernel_key=k, signature_json=s) for r, (k, s) in zip(
+        _comp("module", 3), [(key, json.dumps(signature)), ("legacy", None), ("unmeasured", None)])]
+    db.replace_model_kernels(conn, "m", "fp32", 1, 640, rows)
+    db.upsert_model_run(conn, dict(model_name="m", gpu_name="A40", freq_label="default", dtype="fp32", batch=1,
+                                   imgsz=640, energy_j=1.6, time_s=0.0021))
+    database = db.signature_database(conn)
+    platform = Platform("A40")
+    assert len(database) == 2 and database.static_power(platform, "active_idle").watts == 90.0
+    pipeline = database.pipeline("m/batch_size=1/input_size=640/module/forward")
+    estimate = evaluate(pipeline.expression, database, platform, on_missing="report")
+    assert [leaf.signature is not None for leaf in estimate.leaves] == [True, True, False]
+    assert estimate.leaves[0].specification.is_resolved and not estimate.leaves[1].specification.is_resolved
+    assert estimate.cost.energy_joules == 1.5
+    assert database.model_run("m", 1, 640, platform).energy_joules == 1.6
+    assert load(db.export_signature_database(conn, tmp_path / "export.jsonl")) == database

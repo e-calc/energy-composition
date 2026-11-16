@@ -11,15 +11,18 @@ different position or in a different model size shares the key.
 
 from __future__ import annotations
 
-import dataclasses
-import hashlib
-import json
 from typing import Any
 
 import torch
 from torch import nn
 
+from .calculus.kernel import (BACKWARD, FORWARD, KernelSpecification, TensorSpecification, canonical_json,
+                              input_specifications, kernel_key, short_description)
 from .config import SIG_VERSION
+
+# Names used before the framework-free parts moved to ``ecalc.calculus.kernel``.
+TensorSpec = TensorSpecification
+short_desc = short_description
 
 # Attributes that describe where a module sits in the graph or cache state, never its compute.
 EXCLUDE_ATTRS = frozenset({
@@ -104,23 +107,6 @@ def module_signature(m: nn.Module) -> dict:
     return {"cls": type(m).__name__, "modules": mods, "params": params, "buffers": bufs}
 
 
-@dataclasses.dataclass(frozen=True)
-class TensorSpec:
-    shape: tuple[int, ...]
-    dtype: str  # e.g. "float32"
-
-    @classmethod
-    def of(cls, t: torch.Tensor) -> "TensorSpec":
-        return cls(tuple(t.shape), str(t.dtype).replace("torch.", ""))
-
-    def as_dict(self) -> dict:
-        return {"shape": list(self.shape), "dtype": self.dtype}
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "TensorSpec":
-        return cls(tuple(d["shape"]), d["dtype"])
-
-
 def input_signature(x: torch.Tensor | list | tuple) -> dict:
     if isinstance(x, torch.Tensor):
         return {"kind": "tensor", **TensorSpec.of(x).as_dict()}
@@ -129,10 +115,8 @@ def input_signature(x: torch.Tensor | list | tuple) -> dict:
     raise TypeError(f"unsupported input type {type(x)}")
 
 
-def input_specs(input_sig: dict) -> list[TensorSpec]:
-    if input_sig["kind"] == "tensor":
-        return [TensorSpec.from_dict(input_sig)]
-    return [TensorSpec.from_dict(d) for d in input_sig["items"]]
+def input_specs(input_sig: dict) -> list[TensorSpecification]:
+    return list(input_specifications(input_sig))
 
 
 def kernel_signature(m: nn.Module, x: torch.Tensor | list | tuple) -> dict:
@@ -149,54 +133,14 @@ def op_signature(name: str, tensors: list[torch.Tensor], args: list, kwargs: dic
     }
 
 
-def canonical_json(sig: dict) -> str:
-    return json.dumps(sig, sort_keys=True, separators=(",", ":"))
+def backward_signature(signature: dict, input_gradient: bool = True) -> dict:
+    """Signature of the backward pass of the kernel ``signature`` describes: gradients with respect
+    to its parameters and, unless ``input_gradient`` is False, its inputs."""
+    return KernelSpecification.from_signature(signature).with_direction(BACKWARD, input_gradient).signature
 
 
-def kernel_key(sig: dict) -> str:
-    return hashlib.sha256(canonical_json(sig).encode()).hexdigest()[:16]
-
-
-def _shape_str(spec: dict) -> str:
-    return "x".join(str(i) for i in spec["shape"])
-
-
-def short_desc(sig: dict) -> str:
-    """Human-readable label, e.g. ``Conv[3->16,k3,s2]@1x3x640x640`` or ``op:cat[dim=1]@1x64x80x80+1x64x80x80``."""
-    inp = sig["input"]
-    shape = _shape_str(inp) if inp["kind"] == "tensor" else "+".join(_shape_str(s) for s in inp["items"])
-    if "op" in sig:
-        op = sig["op"]
-        parts = [str(a) for a in op["args"]] + [f"{k}={v}" for k, v in op["kwargs"].items()]
-        return f"op:{op['name']}[{','.join(parts)}]@{shape}"
-    mod = sig["module"]
-    cls = mod["cls"]
-    mods = mod["modules"]
-    convs = [m for m in mods if m["cls"] in ("Conv2d", "Conv1d")]
-    linears = [m for m in mods if m["cls"] == "Linear"]
-    lstms = [m for m in mods if m["cls"] == "LSTM"]
-    nparam = sum(int(torch.Size(p["s"]).numel()) for p in mod["params"])
-    top = mods[0]["a"] if mods else {}
-    if cls == "Conv" and convs:
-        a = convs[0]["a"]
-        inner = f"{a['in_channels']}->{a['out_channels']},k{a['kernel_size'][0]},s{a['stride'][0]}"
-        if a.get("groups", 1) != 1:
-            inner += f",g{a['groups']}"
-    elif cls == "Upsample":
-        inner = f"x{top.get('scale_factor')},{top.get('mode')}"
-    elif cls == "Concat":
-        inner = f"d={top.get('d')}"
-    elif cls == "Detect":
-        inner = f"nc={top.get('nc')},{'e2e' if top.get('end2end') else 'o2m'}"
-    elif convs:
-        inner = f"{convs[0]['a']['in_channels']}->{convs[-1]['a']['out_channels']},p={nparam}"
-    elif lstms:
-        inner = f"{lstms[0]['a']['input_size']}->{lstms[-1]['a']['hidden_size']}"
-    elif linears:
-        inner = f"{linears[0]['a']['in_features']}->{linears[-1]['a']['out_features']}"
-    else:
-        inner = f"p={nparam}"
-    return f"{cls}[{inner}]@{shape}"
+def signature_direction(signature: dict) -> str:
+    return signature.get("direction", FORWARD)
 
 
 _DTYPES = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
@@ -207,7 +151,10 @@ def synthesize_inputs(input_sig: dict, device: str | torch.device = "cuda", seed
     g = torch.Generator(device="cpu").manual_seed(seed)
 
     def mk(spec: dict) -> torch.Tensor:
-        return torch.randn(tuple(spec["shape"]), generator=g, dtype=_DTYPES[spec["dtype"]]).to(device)
+        t = torch.randn(tuple(spec["shape"]), generator=g, dtype=_DTYPES[spec["dtype"]]).to(device)
+        if spec.get("layout") == "channels_last":
+            t = t.contiguous(memory_format=torch.channels_last)
+        return t
 
     if input_sig["kind"] == "tensor":
         return mk(input_sig)

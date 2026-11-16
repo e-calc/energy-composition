@@ -3,6 +3,10 @@
     E_dyn(k)      = e_k - P * t_k
     E_pred_sum    = sum_k E_dyn(k) + P * T_sum      (== sum_k e_k, independent of P)
     E_pred_hybrid = sum_k E_dyn(k) + P * T_e2e      (depends on the static-power definition)
+
+The composition itself is the energy calculus: the model is a ``Sequential`` expression over its
+kernels (``db.composition_expression``) and ``E_pred_sum`` is that expression evaluated. With
+``fill="formula"`` kernels without a measured row are estimated (``ecalc.formula``) and labelled.
 """
 
 from __future__ import annotations
@@ -12,6 +16,7 @@ import datetime as _dt
 from pathlib import Path
 
 from . import db
+from .calculus import FORWARD, MEASURED, Estimate, Platform, SignatureDatabase, evaluate, kernels
 
 
 @dataclasses.dataclass
@@ -35,6 +40,13 @@ class ModelEstimate:
     e2e_row: dict | None
     level: str = "module"
     n_unique_keys: int = 0
+    direction: str = FORWARD
+    estimate: Estimate | None = None  # the evaluated expression, with every kernel's signature and provenance
+
+    @property
+    def estimated_kernels(self) -> int:
+        """Kernels priced by a formula instead of a measurement."""
+        return sum(1 for r in self.layers if r["hit"] and r["provenance"] != MEASURED)
 
     @property
     def complete(self) -> bool:
@@ -71,25 +83,46 @@ def resolve_static_power(conn, gpu_name: str, freq_label: str, method: str, stat
 
 def estimate_model(conn, model_name: str, gpu_name: str, freq_label: str, dtype: str, batch: int, imgsz: int,
                    static_method: str = "active_idle", static_w: float | None = None,
-                   level: str = "module") -> ModelEstimate:
+                   level: str = "module", direction: str = FORWARD, fill: str | None = None,
+                   database: SignatureDatabase | None = None) -> ModelEstimate:
+    """Estimate one stored model composition. ``fill="formula"`` lets formula mode price kernels that
+    have no measured row; ``database`` avoids re-reading the store when estimating several models."""
+    if fill not in (None, "formula"):
+        raise ValueError(f"fill must be None or 'formula', got {fill!r}")
     P = resolve_static_power(conn, gpu_name, freq_label, static_method, static_w)
-    rows = db.model_composition_join(conn, model_name, gpu_name, freq_label, dtype, batch, imgsz, level=level)
+    rows = db.model_composition_join(conn, model_name, gpu_name, freq_label, dtype, batch, imgsz, level=level,
+                                     direction=direction)
     if not rows:
-        raise LookupError(f"no {level}-level composition for {model_name}; run scripts/build_kernel_db.py --level {level}")
+        raise LookupError(f"no {level}-level {direction} composition for {model_name}; "
+                          f"run `ecalc measure kernels --level {level} --direction {direction}`")
+    database = db.signature_database(conn) if database is None else database
+    source = database
+    if fill == "formula":
+        from .formula import with_formulas
+
+        source = with_formulas(database)
+    expression = db.composition_expression(rows)
+    estimate = evaluate(expression, source, Platform(gpu_name, freq_label, dtype), on_missing="report")
+    leaves = dict(zip((leaf.name for leaf in kernels(expression)), estimate.leaves))
     layers = []
-    for r in rows:
+    for r in sorted(rows, key=lambda r: r["layer_idx"]):
         r = dict(r)
-        hit = r["energy_j"] is not None
+        signature = leaves[f"{r['layer_idx']}:{r['layer_type']}" + (f":{r['path']}" if r.get("path") else "")].signature
+        hit = signature is not None
         r["hit"] = hit
-        r["dyn_energy_j"] = (r["energy_j"] - P * r["time_s"]) if hit else None
-        r["static_energy_j"] = (P * r["time_s"]) if hit else None
+        r["provenance"] = signature.provenance if hit else None
+        r["provenance_detail"] = signature.detail if hit else None
+        if hit:  # the signature also carries formula estimates, which the join row does not
+            r["time_s"], r["energy_j"], r["power_w"] = signature.time_seconds, signature.energy_joules, signature.power_watts
+        r["dyn_energy_j"] = signature.dynamic_energy(P) if hit else None
+        r["static_energy_j"] = signature.static_energy(P) if hit else None
         r["shared_with"] = [m for m in db.models_using_key(conn, r["kernel_key"], level) if m != model_name]
         layers.append(r)
     hits = sum(1 for r in layers if r["hit"])
-    T_sum = sum(r["time_s"] for r in layers if r["hit"])
-    E_sum = sum(r["energy_j"] for r in layers if r["hit"])
-    E_dyn = sum(r["dyn_energy_j"] for r in layers if r["hit"])
-    e2e = db.get_model_run(conn, model_name, gpu_name, freq_label, dtype, batch, imgsz)
+    T_sum = estimate.cost.time_seconds
+    E_sum = estimate.cost.energy_joules
+    E_dyn = estimate.dynamic_energy(P)
+    e2e = db.get_model_run(conn, model_name, gpu_name, freq_label, dtype, batch, imgsz, direction)
     E_e2e = e2e["energy_j"] if e2e else None
     T_e2e = e2e["time_s"] if e2e else None
     for r in layers:
@@ -97,9 +130,10 @@ def estimate_model(conn, model_name: str, gpu_name: str, freq_label: str, dtype:
     return ModelEstimate(
         model_name=model_name, gpu_name=gpu_name, freq_label=freq_label, dtype=dtype,
         static_method=static_method, static_w=P, layers=layers, hits=hits, misses=len(layers) - hits,
-        T_sum=T_sum, E_sum=E_sum, E_dyn_sum=E_dyn, E_pred_sum=E_dyn + P * T_sum,
+        T_sum=T_sum, E_sum=E_sum, E_dyn_sum=E_dyn, E_pred_sum=estimate.energy(P),
         E_pred_hybrid=(E_dyn + P * T_e2e) if T_e2e is not None else None,
         E_e2e=E_e2e, T_e2e=T_e2e, e2e_row=e2e, level=level, n_unique_keys=len({r["kernel_key"] for r in layers}),
+        direction=direction, estimate=estimate,
     )
 
 
@@ -117,9 +151,11 @@ def _us(v) -> str:
 
 def summary_lines(est: ModelEstimate) -> list[str]:
     return [
-        f"model={est.model_name} level={est.level} gpu={est.gpu_name} freq={est.freq_label} dtype={est.dtype} "
+        f"model={est.model_name} level={est.level} direction={est.direction} gpu={est.gpu_name} "
+        f"freq={est.freq_label} dtype={est.dtype} "
         f"static={est.static_method} P={est.static_w:.2f} W  kernels hit {est.hits}/{est.hits + est.misses} "
-        f"({est.n_unique_keys} unique keys)",
+        f"({est.n_unique_keys} unique keys"
+        + (f", {est.estimated_kernels} priced by formula" if est.estimated_kernels else "") + ")",
         f"  T_sum   = {_us(est.T_sum)} us   T_e2e = {_us(est.T_e2e)} us   err {_pct(est.time_err)}",
         f"  E_sum   = {_mj(est.E_pred_sum)} mJ  (= sum e_k; dyn {_mj(est.E_dyn_sum)} + static {_mj(est.static_w * est.T_sum)})",
         f"  E_hyb   = {_mj(est.E_pred_hybrid)} mJ  (= sum E_dyn + P*T_e2e)",
@@ -147,10 +183,11 @@ def per_layer_table(est: ModelEstimate) -> str:
 
 
 def kernel_reuse_matrix(conn, model_names: list[str], dtype: str, batch: int, imgsz: int,
-                        level: str = "module") -> list[dict]:
+                        level: str = "module", direction: str = FORWARD) -> list[dict]:
     rows = conn.execute(
-        "SELECT kernel_key, short_desc, model_name FROM model_kernels WHERE dtype=? AND batch=? AND imgsz=? AND level=?",
-        (dtype, batch, imgsz, level),
+        "SELECT kernel_key, short_desc, model_name FROM model_kernels WHERE dtype=? AND batch=? AND imgsz=? AND level=? "
+        "AND direction=?",
+        (dtype, batch, imgsz, level, direction),
     ).fetchall()
     by_key: dict[str, dict] = {}
     for r in rows:
@@ -187,7 +224,7 @@ def write_report(estimates: list[ModelEstimate], conn, out_dir: str | Path, mode
     lines.append("")
     for e in estimates:
         lines += [f"## {e.model_name}", "", "```"] + summary_lines(e) + ["", per_layer_table(e), "```", ""]
-    matrix = kernel_reuse_matrix(conn, model_names, dtype, batch, imgsz, level)
+    matrix = kernel_reuse_matrix(conn, model_names, dtype, batch, imgsz, level, estimates[0].direction)
     lines += ["## Kernel reuse (occurrences per model)", "",
               "| key | desc | " + " | ".join(model_names) + " |", "|---|---|" + "---|" * len(model_names)]
     for d in matrix:

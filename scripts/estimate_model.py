@@ -28,6 +28,9 @@ def main() -> None:
                     help="YOLO image size (default 640) or RFML IQ frame length (default 1024)")
     ap.add_argument("--one2many", action="store_true")
     ap.add_argument("--level", choices=list(C.LEVELS), default="module")
+    ap.add_argument("--direction", choices=["forward", "backward"], default="forward")
+    ap.add_argument("--fill", choices=["formula"], default=None,
+                    help="price kernels without a measured row by interpolation / the light-op formula")
     ap.add_argument("--compare-levels", action="store_true",
                     help="also estimate at the other level and print the per-block leaf-vs-module and DB-size tables")
     ap.add_argument("--static-method", choices=["active_idle", "post_burst", "p8_idle", "user"],
@@ -55,7 +58,7 @@ def main() -> None:
     ests = []
     for v in vnames:
         e = estimate_model(conn, v, gpu, args.freq, args.dtype, args.batch, args.imgsz, args.static_method, args.static_w,
-                           level=args.level)
+                           level=args.level, direction=args.direction, fill=args.fill)
         if e.misses and not args.allow_miss:
             sys.exit(f"{v}: {e.misses} kernels missing from the DB (use --allow-miss or run build_kernel_db.py "
                      f"--level {args.level})")

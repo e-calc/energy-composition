@@ -11,22 +11,27 @@ plus: ``repeats`` trials with the median-energy trial kept, a background
 ``ClockSampler`` restricted to the Zeus measurement window, and an optional
 torch.profiler GPU-active time. Dynamic energy is *not* stored; it is derived at
 estimation time as ``energy_j - P_static * time_s``.
+
+Backward kernels and the whole-model backward pass use the same protocol; their measured
+callable is ``BackwardGraph.step`` (``torch.autograd.grad`` on a graph built once and retained).
 """
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import datetime as _dt
 import json
 import statistics
 import time
-from typing import Callable
+from typing import Callable, Iterator
 
 import torch
 from zeus.monitor import ZeusMonitor
 from zeus.profile import measure as zeus_measure
 
-from .capture import LayerRecord
+from .calculus.kernel import BACKWARD, FORWARD
+from .capture import LayerRecord, model_backward_graph
 from .config import MeasureConfig
 from .gpu import ClockSampler, persistence_mode_on
 from .models import precision_flags, versions
@@ -60,6 +65,28 @@ def model_target(det: torch.nn.Module, x: torch.Tensor) -> Callable[[], None]:
             det(x)
 
     return fn
+
+
+@contextlib.contextmanager
+def kernel_callable(rec: LayerRecord, inputs=None) -> Iterator[Callable[[], None]]:
+    """The callable to measure for ``rec`` in its own direction. A backward graph is released on exit."""
+    if rec.direction == BACKWARD:
+        with rec.backward_graph(inputs) as graph:
+            yield graph.step
+    else:
+        yield rec.target(inputs)
+
+
+@contextlib.contextmanager
+def model_callable(det: torch.nn.Module, x: torch.Tensor, direction: str = FORWARD) -> Iterator[Callable[[], None]]:
+    """The callable to measure for a whole model: its forward, or its backward pass."""
+    if direction == BACKWARD:
+        with model_backward_graph(det, x) as graph:
+            yield graph.step
+    elif direction == FORWARD:
+        yield model_target(det, x)
+    else:
+        raise ValueError(f"unknown direction {direction!r}")
 
 
 @dataclasses.dataclass
@@ -170,22 +197,23 @@ def measure_kernel(rec: LayerRecord, monitor: ZeusMonitor, handle, cfg: MeasureC
         inputs = synthesize_inputs(rec.input_sig, device)
     else:
         raise ValueError(input_source)
-    fn = rec.target(inputs)
-    med, trials = measure_callable(fn, monitor, handle, cfg, log=log)
+    with kernel_callable(rec, inputs) as fn:
+        med, trials = measure_callable(fn, monitor, handle, cfg, log=log)
     row = _summary_row(med, trials, cfg, handle, gpu_name)
     row.update(
         kernel_key=rec.kernel_key, kernel_type=rec.layer_type, short_desc=rec.short_desc,
         signature_json=json.dumps(rec.signature, sort_keys=True), input_spec_json=json.dumps(rec.input_sig),
-        input_source=input_source, gpu_kernel_time_s=None,
+        input_source=input_source, gpu_kernel_time_s=None, direction=rec.direction,
     )
     return row
 
 
 def measure_model_e2e(det: torch.nn.Module, x: torch.Tensor, monitor: ZeusMonitor, handle, cfg: MeasureConfig,
-                      gpu_name: str, model_name: str, batch: int, imgsz: int, log=None) -> dict:
-    """Same protocol applied to the full fused forward; returns a ``model_runs`` row."""
-    fn = model_target(det, x)
-    med, trials = measure_callable(fn, monitor, handle, cfg, log=log)
+                      gpu_name: str, model_name: str, batch: int, imgsz: int, log=None,
+                      direction: str = FORWARD) -> dict:
+    """Same protocol applied to the full fused forward (or backward pass); returns a ``model_runs`` row."""
+    with model_callable(det, x, direction) as fn:
+        med, trials = measure_callable(fn, monitor, handle, cfg, log=log)
     row = _summary_row(med, trials, cfg, handle, gpu_name)
-    row.update(model_name=model_name, batch=batch, imgsz=imgsz, gpu_kernel_time_s=None)
+    row.update(model_name=model_name, batch=batch, imgsz=imgsz, gpu_kernel_time_s=None, direction=direction)
     return row

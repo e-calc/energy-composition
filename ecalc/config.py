@@ -5,11 +5,15 @@ from __future__ import annotations
 import dataclasses
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+_CHECKOUT = Path(__file__).resolve().parent.parent
+# In a source checkout data/ and results/ sit next to the package; for an installed package they
+# go under the current working directory.
+ROOT = _CHECKOUT if (_CHECKOUT / "pyproject.toml").exists() else Path.cwd()
 DATA_DIR = ROOT / "data"
 WEIGHTS_DIR = DATA_DIR / "weights"
 EXPORT_DIR = DATA_DIR / "export"
 DB_PATH = DATA_DIR / "ecalc.sqlite"
+SIGNATURE_DATABASE_PATH = DATA_DIR / "signature_database.jsonl"
 RESULTS_DIR = ROOT / "results"
 REPORTS_DIR = RESULTS_DIR / "reports"
 PLOTS_DIR = RESULTS_DIR / "plots"
