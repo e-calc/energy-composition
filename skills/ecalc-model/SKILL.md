@@ -74,8 +74,8 @@ Inspect these code entrypoints as relevant:
 - `ecalc/signature.py`: identity, supported inputs and synthetic input creation.
 - `ecalc/measure.py`, `ecalc/static_power.py`, `ecalc/gpu.py`: measurement tools.
 - `ecalc/db.py`, `ecalc/estimate.py`: storage and composition estimation.
-- `scripts/_common.py`, `scripts/build_kernel_db.py`,
-  `scripts/measure_model_e2e.py`: current GPU orchestration and assumptions.
+- `ecalc/measurement_commands.py` (the bodies of `scripts/build_kernel_db.py` and
+  `scripts/measure_model_e2e.py`): current GPU orchestration and assumptions.
 
 The existing YOLO code uses Ultralytics routing; it is not a universal adapter.
 The default Session and composition identity assume square RGB images. Do not

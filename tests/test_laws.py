@@ -355,6 +355,14 @@ def test_costs_reject_invalid_numbers():
     assert Cost(0.0, 0.0, 0.0) == ZERO  # a zero-cost kernel (a view, a flatten) is valid
 
 
+def test_busy_time_defaults_to_the_duration_of_a_single_kernel():
+    assert Cost(0.5, 100.0) == Cost(0.5, 100.0, 0.5)
+    assert not Cost(0.5, 100.0).has_overlap
+    overlapped = parallel(Cost(0.5, 100.0), Cost(0.25, 40.0))
+    assert (overlapped.time_seconds, overlapped.busy_seconds) == (0.5, 0.75)
+    assert sequential(Cost(0.5, 100.0), Cost(0.25, 40.0)).busy_seconds == 0.75
+
+
 def test_grid_signature_is_on_the_grid():
     signature = grid_signature(operation_specification("cat"), random.Random(0), minimum_watts=90)
     assert (signature.time_seconds * 2 ** 30).is_integer() and (signature.energy_joules * 2 ** 30).is_integer()

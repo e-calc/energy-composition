@@ -35,13 +35,22 @@ def _checked(name: str, value: float) -> float:
 
 @dataclasses.dataclass(frozen=True)
 class Cost:
-    """Time and energy of a kernel or of any composition of kernels."""
+    """Time and energy of a kernel or of any composition of kernels.
+
+    ``time_seconds``   wall time of the composition.
+    ``energy_joules``  sum of the member kernels' energies, as measured.
+    ``busy_seconds``   sum of the member kernels' durations: how long they would take back to
+                       back. Equal to ``time_seconds`` for one kernel and for anything sequential
+                       (the default); larger under overlap.
+    """
 
     time_seconds: float
     energy_joules: float
-    busy_seconds: float
+    busy_seconds: float | None = None
 
     def __post_init__(self) -> None:
+        if self.busy_seconds is None:
+            object.__setattr__(self, "busy_seconds", self.time_seconds)
         for field in ("time_seconds", "energy_joules", "busy_seconds"):
             object.__setattr__(self, field, _checked(field, getattr(self, field)))
 

@@ -134,7 +134,7 @@ def gpu_kernel_time(fn: Callable[[], None], iters: int = 50) -> float | None:
 
     WARNING: once torch.profiler has run in a process, every later CUDA launch in that
     process is ~30% slower (kineto/CUPTI stays hooked). Call this only after all Zeus
-    measurements of the process are finished (see scripts/build_kernel_db.py).
+    measurements of the process are finished (see ``measurement_commands.kernels_main``).
     """
     try:
         from torch.profiler import ProfilerActivity, profile

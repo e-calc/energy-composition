@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from ecalc import config as C, db  # noqa: E402
 from ecalc.estimate import (compare_levels, compare_levels_table, db_size_summary, db_size_table,  # noqa: E402
-                            estimate_model, per_layer_table, plot_estimates, plot_level_comparison, summary_lines,
+                            estimate_model, per_layer_table, plot_energy, plot_estimates, plot_level_comparison, summary_lines,
                             write_compare_report, write_report)
 from ecalc.models import default_size, parse_model_list, variant_name  # noqa: E402
 
@@ -73,6 +73,7 @@ def main() -> None:
     if args.plot:
         p = plot_estimates(ests, C.PLOTS_DIR / f"{md.stem}.png")
         print(f"plot:   {p}")
+        print(f"plot:   {plot_energy(ests, C.PLOTS_DIR / f'{md.stem}_energy.png')}")
     if args.compare_levels:
         other = "leaf" if args.level == "module" else "module"
         level_ests = {args.level: ests, other: []}

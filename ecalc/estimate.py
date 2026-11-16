@@ -77,7 +77,7 @@ def resolve_static_power(conn, gpu_name: str, freq_label: str, method: str, stat
         return float(static_w)
     row = db.get_static(conn, gpu_name, freq_label, method)
     if row is None:
-        raise LookupError(f"no static_power row for ({gpu_name}, {freq_label}, {method}); run scripts/measure_static.py")
+        raise LookupError(f"no static_power row for ({gpu_name}, {freq_label}, {method}); run `ecalc measure static-power`")
     return float(row["power_w"])
 
 
@@ -243,6 +243,45 @@ def write_report(estimates: list[ModelEstimate], conn, out_dir: str | Path, mode
     return md, csvp
 
 
+def _draw_energy_panel(ax, estimates: list[ModelEstimate], label_font_size: float = 9) -> None:
+    """Composed energy as stacked static and dynamic bars, the measured whole model as a marker,
+    and the composition error above each bar."""
+    names = [e.model_name for e in estimates]
+    xs = range(len(names))
+    dyn = [1e3 * e.E_dyn_sum for e in estimates]
+    sta = [1e3 * e.static_w * e.T_sum for e in estimates]
+    ax.bar(xs, sta, label="static  (s·T)", color="tab:gray")
+    ax.bar(xs, dyn, bottom=sta, label="dynamic  (d)", color="tab:orange")
+    e2e = [1e3 * e.E_e2e if e.E_e2e is not None else 0 for e in estimates]
+    ax.plot(xs, e2e, "k_", markersize=25, markeredgewidth=2, label="measured end-to-end")
+    for x, e in zip(xs, estimates):
+        if e.energy_err_sum is not None:
+            top = max(1e3 * e.E_pred_sum, 1e3 * e.E_e2e)
+            ax.annotate(f"{100 * e.energy_err_sum:+.1f}%", (x, top), xytext=(0, 4), textcoords="offset points",
+                        ha="center", va="bottom", fontsize=label_font_size)
+    ax.margins(y=0.12)
+    ax.set_xticks(list(xs), names)
+    ax.set_ylabel("energy per forward (mJ)")
+    ax.legend()
+
+
+def plot_energy(estimates: list[ModelEstimate], out_path: str | Path, font_size: float = 15) -> Path:
+    """The energy panel alone, without a title and with large text: the figure used in the README."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    with plt.rc_context({"font.size": font_size, "legend.fontsize": font_size - 1}):
+        fig, ax = plt.subplots(figsize=(6.4, 4.6), tight_layout=True)
+        _draw_energy_panel(ax, estimates, label_font_size=font_size - 1)
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out_path, dpi=130)
+        plt.close(fig)
+    return out_path
+
+
 def plot_estimates(estimates: list[ModelEstimate], out_path: str | Path) -> Path:
     import matplotlib
 
@@ -251,24 +290,10 @@ def plot_estimates(estimates: list[ModelEstimate], out_path: str | Path) -> Path
 
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.2), tight_layout=True)
     names = [e.model_name for e in estimates]
-    ax = axes[0]
     xs = range(len(names))
-    dyn = [1e3 * e.E_dyn_sum for e in estimates]
-    sta = [1e3 * e.static_w * e.T_sum for e in estimates]
-    ax.bar(xs, sta, label="static  (P * sum t_k)", color="tab:gray")
-    ax.bar(xs, dyn, bottom=sta, label="sum dynamic  (sum e_k - P t_k)", color="tab:orange")
-    e2e = [1e3 * e.E_e2e if e.E_e2e is not None else 0 for e in estimates]
-    ax.plot(xs, e2e, "k_", markersize=25, markeredgewidth=2, label="measured end-to-end")
-    for x, e in zip(xs, estimates):
-        if e.energy_err_sum is not None:
-            top = max(1e3 * e.E_pred_sum, 1e3 * e.E_e2e)
-            ax.annotate(f"{100 * e.energy_err_sum:+.1f}%", (x, top), xytext=(0, 4), textcoords="offset points",
-                        ha="center", va="bottom", fontsize=9)
-    ax.margins(y=0.12)
-    ax.set_xticks(list(xs), names)
-    ax.set_ylabel("energy per forward (mJ)")
-    ax.set_title(f"[{estimates[0].level}] E_sum = sum e_k vs measured  (P = {estimates[0].static_w:.1f} W); label = E_sum error")
-    ax.legend()
+    ax = axes[0]
+    _draw_energy_panel(ax, estimates)
+    ax.set_title(f"[{estimates[0].level}] E = s·T + d vs measured  (s = {estimates[0].static_w:.1f} W); label = E_sum error")
     ax = axes[1]
     ax.bar([x - 0.2 for x in xs], [1e6 * e.T_sum for e in estimates], width=0.4, label="sum t_k")
     ax.bar([x + 0.2 for x in xs], [1e6 * e.T_e2e if e.T_e2e else 0 for e in estimates], width=0.4, label="T_e2e")

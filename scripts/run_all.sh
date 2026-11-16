@@ -32,5 +32,5 @@ if [[ "${SKIP_E2E:-0}" == "1" ]]; then echo "=== E2E === skipped (SKIP_E2E=1, re
 echo "=== E2E ===";      uv run python scripts/measure_model_e2e.py --models "$MODELS" --batch "$BATCH" --profile-kernel-time $EXTRA 2>&1 | grep -Ev "$FILTER"; fi
 CMP=""; if [[ "$LEVEL" == "leaf" ]]; then CMP="--compare-levels"; fi
 echo "=== ESTIMATE active_idle ==="; uv run python scripts/estimate_model.py --models "$MODELS" --batch "$BATCH" --level "$LEVEL" --static-method active_idle --plot --tag "active_idle_b$BATCH" $CMP
-uv run python -c "from ecalc import db, config as C; print(db.export_csv(db.connect(C.DB_PATH), C.EXPORT_DIR))"
+uv run python -m ecalc export   # data/signature_database.jsonl, the input of `ecalc estimate`
 echo "=== DONE ==="
