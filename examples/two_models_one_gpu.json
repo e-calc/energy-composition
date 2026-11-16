@@ -1,0 +1,10 @@
+{
+  "schema": "ecalc.pipeline/1",
+  "name": "yolo26n and rf_vgg overlapped on one GPU",
+  "expression": {
+    "parallel": [
+      {"pipeline": "yolo26n/batch_size=1/input_size=640/module/forward"},
+      {"pipeline": "rf_vgg/batch_size=32/input_size=1024/module/forward"}
+    ]
+  }
+}

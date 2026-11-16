@@ -3,8 +3,8 @@
 __pycache__/
 *.pyc
 .pytest_cache/
-data/weights/
-data/*.sqlite*
-data/export/
-data/engines/
+# Measured data stays local: the SQLite store, the exported signature database, weights, reports.
+data/
 results/
+dist/
+*.egg-info/

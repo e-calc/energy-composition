@@ -376,9 +376,11 @@ wheels = [
 
 [[package]]
 name = "ecalc"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
-dependencies = [
+
+[package.optional-dependencies]
+all = [
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "nvidia-ml-py" },
@@ -388,26 +390,53 @@ dependencies = [
     { name = "ultralytics" },
     { name = "zeus" },
 ]
+capture = [
+    { name = "numpy" },
+    { name = "torch" },
+    { name = "torchvision" },
+    { name = "ultralytics" },
+]
+measure = [
+    { name = "numpy" },
+    { name = "nvidia-ml-py" },
+    { name = "torch" },
+    { name = "torchvision" },
+    { name = "ultralytics" },
+    { name = "zeus" },
+]
+report = [
+    { name = "matplotlib" },
+    { name = "numpy" },
+    { name = "pandas" },
+]
 
 [package.dev-dependencies]
 dev = [
+    { name = "ecalc", extra = ["all"] },
     { name = "pytest" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "matplotlib" },
-    { name = "numpy" },
-    { name = "nvidia-ml-py" },
-    { name = "pandas" },
-    { name = "torch", specifier = ">=2.6" },
-    { name = "torchvision" },
-    { name = "ultralytics", specifier = ">=8.4" },
-    { name = "zeus", git = "https://github.com/ml-energy/zeus?rev=796e8ada280ced0b31a11243cb8b2dae13f403d1" },
+    { name = "ecalc", extras = ["capture"], marker = "extra == 'measure'" },
+    { name = "ecalc", extras = ["capture", "measure", "report"], marker = "extra == 'all'" },
+    { name = "matplotlib", marker = "extra == 'report'" },
+    { name = "numpy", marker = "extra == 'capture'" },
+    { name = "numpy", marker = "extra == 'report'" },
+    { name = "nvidia-ml-py", marker = "extra == 'measure'" },
+    { name = "pandas", marker = "extra == 'report'" },
+    { name = "torch", marker = "extra == 'capture'", specifier = ">=2.6" },
+    { name = "torchvision", marker = "extra == 'capture'" },
+    { name = "ultralytics", marker = "extra == 'capture'", specifier = ">=8.4" },
+    { name = "zeus", marker = "extra == 'measure'", git = "https://github.com/ml-energy/zeus?rev=796e8ada280ced0b31a11243cb8b2dae13f403d1" },
 ]
+provides-extras = ["capture", "measure", "report", "all"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8" }]
+dev = [
+    { name = "ecalc", extras = ["all"] },
+    { name = "pytest", specifier = ">=8" },
+]
 
 [[package]]
 name = "filelock"

@@ -1,0 +1,10 @@
+{
+  "schema": "ecalc.pipeline/1",
+  "name": "rf_vgg forward pass followed by its backward pass",
+  "expression": {
+    "sequential": [
+      {"pipeline": "rf_vgg/batch_size=32/input_size=1024/module/forward"},
+      {"pipeline": "rf_vgg/batch_size=32/input_size=1024/module/backward"}
+    ]
+  }
+}

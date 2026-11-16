@@ -1,24 +1,41 @@
 [project]
 name = "ecalc"
-version = "0.1.0"
-description = "Per-kernel GPU energy database study: E = dynamic + static_power * time"
+version = "0.2.0"
+description = "Energy calculus for GPU workloads: kernel energy signatures E = s*T + d, their composition, and the tools to measure them"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
-dependencies = [
-    "torch>=2.6",
-    "torchvision",
-    "ultralytics>=8.4",
-    "zeus>=0.16",
-    "nvidia-ml-py",
-    "pandas",
-    "numpy",
-    "matplotlib",
+keywords = ["energy", "gpu", "energy-calculus", "measurement", "pytorch"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
 ]
+# The calculus, serialization, formula mode and `ecalc estimate | compose | plan` need only the
+# standard library. Capturing a model and measuring on a GPU are opt-in extras.
+dependencies = []
+
+[project.optional-dependencies]
+# capture a model's kernels (CPU is enough)
+capture = ["torch>=2.6", "torchvision", "ultralytics>=8.4", "numpy"]
+# measure kernels, whole models and static power on a CUDA GPU
+measure = ["ecalc[capture]", "zeus>=0.16", "nvidia-ml-py"]
+# reports and figures
+report = ["pandas", "numpy", "matplotlib"]
+all = ["ecalc[capture,measure,report]"]
+
+[project.scripts]
+ecalc = "ecalc.command_line:main"
+
+[project.urls]
+Repository = "https://github.com/e-calc/energy-composition"
 
 [dependency-groups]
-dev = ["pytest>=8"]
+# `uv sync` installs this group by default, so a checkout gets everything needed to measure and test.
+dev = ["pytest>=8", "ecalc[all]"]
 
 [tool.uv.sources]
 # zeus master at the merge of ml-energy/zeus#263 (`warmup_settle_duration` in zeus.profile.measure); not in 0.16.0.
