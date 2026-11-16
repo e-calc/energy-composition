@@ -24,13 +24,12 @@ from . import config as C, db  # noqa: E402
 from .calculus import DIRECTIONS, FORMULA, FORWARD, INTERPOLATED, Platform  # noqa: E402
 from .capture import capture, model_composition  # noqa: E402
 from .gpu import (ensure_persistence_mode, gpu_name, max_sm_clock_mhz, nvml_handle_for_torch_device,  # noqa: E402
-                  nvml_handle_for_visible_index, reset_clocks, snapshot, try_lock_clocks)
+                  reset_clocks, snapshot, try_lock_clocks)
 from .measure import (gpu_kernel_time, kernel_callable, make_monitor, measure_kernel, measure_model_e2e,  # noqa: E402
                       model_callable)
 from .models import (default_size, load_fused_model, load_model, make_input, model_input, parse_model_list,  # noqa: E402
                      precision_flags, set_precision, variant_name, versions)
-from .static_power import (measure_active_idle_power, measure_p8_idle_power, p0_plateau_s,  # noqa: E402
-                           record_power_decay)
+from .static_power import measure_active_idle_power, p0_plateau_s, record_power_decay  # noqa: E402
 
 
 # ---- shared options and session ----------------------------------------------------------------
@@ -54,7 +53,6 @@ def add_measure_arguments(parser: argparse.ArgumentParser) -> None:
                         help="run the workload this many seconds before each Zeus window (warmup_settle_duration; "
                              "replaces --warmup for the trial) so the GPU reaches its thermal state")
     parser.add_argument("--lock-mhz", type=int, default=None, help="best-effort SM clock lock (needs root)")
-    parser.add_argument("--strict-fp32", action="store_true", help="disable TF32 (precision label fp32_strict)")
     parser.add_argument("--profile-kernel-time", action="store_true")
     parser.add_argument("--one2many", action="store_true", help="measure the one-to-many head variant (<name>-nms)")
     parser.add_argument("--allow-no-persistence", action="store_true",
@@ -80,7 +78,7 @@ def make_config(args) -> C.MeasureConfig:
     return C.MeasureConfig(
         measurement_duration_s=args.measurement_duration, cooldown_s=args.cooldown, num_warmup=args.warmup,
         num_calibration=args.calibration, warmup_settle_s=args.settle, repeats=args.repeats,
-        dtype=set_precision(args.strict_fp32), profile_kernel_time=args.profile_kernel_time, lock_mhz=args.lock_mhz,
+        dtype=set_precision(), profile_kernel_time=args.profile_kernel_time, lock_mhz=args.lock_mhz,
     )
 
 
@@ -119,7 +117,7 @@ class Session:
 
     @property
     def platform(self) -> Platform:
-        return Platform(self.gpu_name, self.cfg.freq_label, self.cfg.dtype)
+        return Platform(self.gpu_name, self.cfg.freq_label)
 
     def size_for(self, name: str) -> int:
         """``--input-size`` if given, else the model family default (640 px YOLO, 1024-sample RFML frame)."""
@@ -205,7 +203,8 @@ def kernels_main(argv: list[str] | None = None) -> None:
                     to_profile.append(r)
                     continue
                 if formulas is not None:
-                    filled = formulas.lookup(db.kernel_specification(r.kernel_key, json.dumps(r.signature)), s.platform)
+                    filled = formulas.lookup(db.kernel_specification(r.kernel_key, json.dumps(r.signature), precision=s.cfg.dtype),
+                                             s.platform)
                     if filled is not None and filled.provenance in (INTERPOLATED, FORMULA):
                         s.log(f"  skip {tag} ({filled.provenance}: {filled.detail})")
                         done_this_run.add(r.kernel_key)
@@ -284,11 +283,10 @@ def model_main(argv: list[str] | None = None) -> None:
 # ---- ecalc measure static-power ----------------------------------------------------------------
 
 def static_power_main(argv: list[str] | None = None) -> None:
-    """Measure static power definitions and store them.
+    """Measure the GPU's static power and store it.
 
-    active_idle (primary): Zeus window --settle seconds after a burst of full-model forwards (GPU at P0).
-    post_burst (reference): 0.2 s window immediately after the burst (includes the decaying transient).
-    p8_idle (optional): sleeping-GPU floor.
+    Static power is the active-idle power: a Zeus window --settle seconds after a burst of
+    full-model forwards, while the GPU is still at P0.
     Also records a post-burst power decay trace to results/static_power/decay_<gpu>.csv.
     """
     parser = argparse.ArgumentParser(prog="ecalc measure static-power", description=static_power_main.__doc__,
@@ -299,30 +297,12 @@ def static_power_main(argv: list[str] | None = None) -> None:
     parser.add_argument("--idle-window", type=float, default=1.0, help="seconds of the Zeus window")
     parser.add_argument("--settle", type=float, default=1.0, help="seconds between burst end and window start")
     parser.add_argument("--n", "--cycles", dest="n", type=int, default=20, help="number of burst/idle cycles")
-    parser.add_argument("--no-post-burst", action="store_true", help="skip the immediate post-burst reference row")
     parser.add_argument("--auto-window", action="store_true", help="set idle window from the measured P0 plateau")
-    parser.add_argument("--with-p8", action="store_true", help="also measure the P8 sleeping floor (~1 min)")
     parser.add_argument("--no-decay", action="store_true")
-    parser.add_argument("--p8-only", action="store_true", help="only (re)measure the P8 sleeping floor")
     args = parser.parse_args(argv)
-    if args.p8_only:
-        args.with_p8 = True
-    p8_row = None
-    if args.with_p8:
-        # before Session(): torch.cuda.set_device() would create a CUDA context and keep the GPU at P0
-        h = nvml_handle_for_visible_index(args.device)
-        print("p8_idle: waiting for the GPU to drop to P8 (no CUDA context yet) ...", flush=True)
-        p8_row = measure_p8_idle_power(h, log=print)
     s = Session(args, "measure_static_power")
     conn = db.connect(args.db)
     try:
-        if p8_row is not None:
-            p8_row.update(gpu_name=s.gpu_name, freq_label=s.cfg.freq_label, model_name=None,
-                          driver_version=s.meta["versions"]["driver_version"])
-            db.upsert_static(conn, p8_row)
-            s.log(f"p8_idle = {p8_row['power_w']:.2f} W (P{p8_row['pstate']}) {p8_row['notes'] or ''}")
-            if args.p8_only:
-                return
         model_name = args.models.split(",")[0]
         det = load_fused_model(model_name, s.device, end2end=not args.one2many)
         x = make_input(s.device, shape=s.input_shape)
@@ -346,24 +326,15 @@ def static_power_main(argv: list[str] | None = None) -> None:
             if args.auto_window:
                 window = max(0.05, min(args.idle_window, 0.8 * (plateau - args.settle)))
                 s.log(f"  auto idle window = {window:.3f}s (settle {args.settle}s)")
-        common = dict(gpu_name=s.gpu_name, freq_label=s.cfg.freq_label, model_name=model_name,
-                      driver_version=s.meta["versions"]["driver_version"])
-        s.log(f"active_idle: {args.n} cycles of {args.burst}s burst, {args.settle}s settle, {window:.3f}s window "
+        s.log(f"static power: {args.n} cycles of {args.burst}s burst, {args.settle}s settle, {window:.3f}s window "
               f"on {model_name}")
         row = measure_active_idle_power(det, x, monitor, s.handle, burst_s=args.burst, idle_window_s=window,
                                         n=args.n, settle_s=args.settle, log=s.log,
                                         require_persistence=not args.allow_no_persistence)
-        row.update(common)
+        row.update(gpu_name=s.gpu_name, freq_label=s.cfg.freq_label, model_name=model_name,
+                   driver_version=s.meta["versions"]["driver_version"])
         db.upsert_static(conn, row)
-        s.log(f"active_idle = {row['power_w']:.2f} W ({row['n_samples']} accepted, {row['n_rejected']} rejected; "
+        s.log(f"static power = {row['power_w']:.2f} W ({row['n_samples']} accepted, {row['n_rejected']} rejected; "
               f"{row['notes']})")
-        if not args.no_post_burst:
-            s.log(f"post_burst: {args.n} cycles of {args.burst}s burst + 0.2s window immediately after")
-            row = measure_active_idle_power(det, x, monitor, s.handle, burst_s=args.burst, idle_window_s=0.2,
-                                            n=args.n, settle_s=0.0, log=s.log, method="post_burst",
-                                            require_persistence=not args.allow_no_persistence)
-            row.update(common)
-            db.upsert_static(conn, row)
-            s.log(f"post_burst = {row['power_w']:.2f} W ({row['notes']})")
     finally:
         s.close()

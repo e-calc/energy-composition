@@ -15,7 +15,7 @@ pytestmark = pytest.mark.gpu
 
 @pytest.fixture(scope="module")
 def env():
-    set_precision(False)
+    set_precision()
     handle = nvml_handle_for_torch_device(0)
     det = load_fused_model("yolo26n", "cuda")
     x = make_input("cuda")
@@ -43,7 +43,7 @@ def test_clock_sampler_sees_boost_under_load(env):
     assert summ["sm_clock_mhz_mean"] > 0.8 * max_sm_clock_mhz(env["handle"])
 
 
-def test_active_idle_is_p0_and_above_p8(env):
+def test_static_power_is_measured_at_p0(env):
     row = measure_active_idle_power(env["det"], env["x"], env["monitor"], env["handle"], burst_s=1.0,
                                     idle_window_s=0.5, n=3, settle_s=0.5, require_persistence=False)
     assert row["n_samples"] >= 1 and row["pstate"] == 0

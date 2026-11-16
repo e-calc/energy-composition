@@ -2,7 +2,7 @@
 
 Tables
   kernel_energy  PK (kernel_key, gpu_name, freq_label, dtype)  one isolated Zeus measurement per kernel
-  static_power   PK (gpu_name, freq_label, method)             static power definitions
+  static_power   PK (gpu_name, freq_label, method)             static power; method is always 'active_idle'
   model_runs     PK (model_name, gpu_name, freq_label, dtype, batch, imgsz, direction)  end-to-end ground truth
   model_kernels  PK (model_name, dtype, batch, imgsz, level, direction, layer_idx)      model composition
 
@@ -22,8 +22,11 @@ import json
 import sqlite3
 from pathlib import Path
 
-from .calculus import (FORWARD, Kernel, KernelSpecification, ModelRun, Pipeline, Platform, Sequential, Signature,
+from .calculus import (DEFAULT_PRECISION, FORWARD, PRECISIONS, Kernel, KernelSpecification, ModelRun, Pipeline, Platform, Sequential, Signature,
                        SignatureDatabase, StaticPower, dump, pipeline_name)
+
+STATIC_POWER_METHOD = "active_idle"
+"""The one definition of static power: the GPU awake at P0 after a burst, doing nothing."""
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS kernel_energy (
@@ -218,22 +221,17 @@ def set_model_run_gpu_time(conn, model_name, gpu_name, freq_label, dtype, batch,
 
 
 def upsert_static(conn, row: dict, commit: bool = True) -> None:
-    _upsert(conn, "static_power", row)
+    _upsert(conn, "static_power", {**row, "method": STATIC_POWER_METHOD})
     if commit:
         conn.commit()
 
 
-def get_static(conn, gpu_name: str, freq_label: str, method: str) -> dict | None:
+def get_static(conn, gpu_name: str, freq_label: str) -> dict | None:
     r = conn.execute(
         "SELECT * FROM static_power WHERE gpu_name=? AND freq_label=? AND method=?",
-        (gpu_name, freq_label, method),
+        (gpu_name, freq_label, STATIC_POWER_METHOD),
     ).fetchone()
     return dict(r) if r else None
-
-
-def list_static(conn, gpu_name: str, freq_label: str) -> list[dict]:
-    return [dict(r) for r in conn.execute(
-        "SELECT * FROM static_power WHERE gpu_name=? AND freq_label=? ORDER BY method", (gpu_name, freq_label))]
 
 
 def upsert_model_run(conn, row: dict, commit: bool = True) -> None:
@@ -277,7 +275,7 @@ def model_composition_join(conn, model_name: str, gpu_name: str, freq_label: str
     """Composition rows LEFT JOINed with kernel_energy; misses have energy_j NULL."""
     rows = conn.execute(
         """
-        SELECT mk.level, mk.direction, mk.layer_idx, mk.parent_layer_idx, mk.path, mk.layer_type, mk.from_json,
+        SELECT mk.dtype, mk.level, mk.direction, mk.layer_idx, mk.parent_layer_idx, mk.path, mk.layer_type, mk.from_json,
                mk.kernel_key, mk.short_desc, mk.n_params,
                COALESCE(mk.signature_json, ke.signature_json) AS signature_json,
                ke.energy_j, ke.time_s, ke.power_w, ke.energy_std_j, ke.time_std_s, ke.iterations, ke.n_repeats,
@@ -332,17 +330,22 @@ def export_csv(conn, out_dir: str | Path) -> list[Path]:
 # Bridge to the energy calculus: the store as a SignatureDatabase, and its JSON Lines export.
 # ---------------------------------------------------------------------------------------------
 
-def kernel_specification(kernel_key: str, signature_json: str | None, description: str = "") -> KernelSpecification:
+def kernel_specification(kernel_key: str, signature_json: str | None, description: str = "",
+                         precision: str = DEFAULT_PRECISION) -> KernelSpecification:
     """Specification of a stored kernel. Falls back to a key-only specification when the stored
-    structural signature is absent or does not hash to the key."""
+    structural signature is absent or does not hash to the key.
+
+    The store identifies a measurement by ``(kernel_key, dtype)``, where ``kernel_key`` hashes the
+    structure alone. In the calculus the precision is part of the kernel, so a kernel stored at a
+    non-default precision gets its own specification and key here."""
     if signature_json:
         try:
             specification = KernelSpecification.from_signature(json.loads(signature_json))
         except (ValueError, TypeError):
             specification = None
         if specification is not None and specification.key == kernel_key:
-            return specification
-    return KernelSpecification.from_key(kernel_key, description or "")
+            return specification.with_precision(precision)
+    return KernelSpecification.from_key(kernel_key, description or "").with_precision(precision)
 
 
 def composition_expression(rows: list[dict], known: dict[str, KernelSpecification] | None = None) -> Sequential:
@@ -350,15 +353,18 @@ def composition_expression(rows: list[dict], known: dict[str, KernelSpecificatio
 
     Module level: one kernel per layer, in order. Leaf level: one named group per top-level layer,
     holding that layer's leaves in execution order. ``known`` maps keys to specifications already
-    built (from measured rows), so one key always stands for one specification."""
+    built (from measured rows), keyed by ``(kernel_key, dtype)``, so one stored kernel always
+    stands for one specification. A row's ``dtype`` is the precision of its kernel."""
     known = {} if known is None else known
 
     def leaf(r: dict) -> Kernel:
         name = f"{r['layer_idx']}:{r['layer_type']}" + (f":{r['path']}" if r.get("path") else "")
-        specification = known.get(r["kernel_key"])
+        precision = r.get("dtype") or DEFAULT_PRECISION
+        specification = known.get((r["kernel_key"], precision))
         if specification is None:
-            specification = kernel_specification(r["kernel_key"], r.get("signature_json"), r.get("short_desc") or "")
-            known[r["kernel_key"]] = specification
+            specification = kernel_specification(r["kernel_key"], r.get("signature_json"), r.get("short_desc") or "",
+                                                 precision)
+            known[(r["kernel_key"], precision)] = specification
         return Kernel(specification, name)
 
     rows = sorted(rows, key=lambda r: r["layer_idx"])
@@ -372,32 +378,40 @@ def composition_expression(rows: list[dict], known: dict[str, KernelSpecificatio
 
 def signature_database(conn: sqlite3.Connection) -> SignatureDatabase:
     """Everything in the store as an in-memory ``SignatureDatabase``: measured signatures, static
-    power definitions, one pipeline per stored model composition, and the end-to-end runs."""
+    power, one pipeline per stored model composition, and the end-to-end runs. Rows at a precision
+    that is no longer supported (``dtype`` not in ``PRECISIONS``) are left out."""
     database = SignatureDatabase()
-    known: dict[str, KernelSpecification] = {}
+    known: dict[tuple[str, str], KernelSpecification] = {}
     for r in conn.execute("SELECT kernel_key, gpu_name, freq_label, dtype, short_desc, signature_json, energy_j, time_s "
                           "FROM kernel_energy WHERE energy_j IS NOT NULL AND time_s IS NOT NULL"):
-        specification = kernel_specification(r["kernel_key"], r["signature_json"], r["short_desc"] or "")
-        known.setdefault(r["kernel_key"], specification)
-        database.add_signature(Signature(specification, Platform(r["gpu_name"], r["freq_label"], r["dtype"]),
+        if r["dtype"] not in PRECISIONS:
+            continue
+        specification = known.setdefault((r["kernel_key"], r["dtype"]), kernel_specification(
+            r["kernel_key"], r["signature_json"], r["short_desc"] or "", r["dtype"]))
+        database.add_signature(Signature(specification, Platform(r["gpu_name"], r["freq_label"]),
                                          r["time_s"], r["energy_j"]))
-    for r in conn.execute("SELECT gpu_name, freq_label, method, power_w FROM static_power WHERE power_w IS NOT NULL"):
-        database.add_static_power(StaticPower(Platform(r["gpu_name"], r["freq_label"]), r["method"], r["power_w"]))
+    for r in conn.execute("SELECT gpu_name, freq_label, power_w FROM static_power "
+                          "WHERE power_w IS NOT NULL AND method=?", (STATIC_POWER_METHOD,)):
+        database.add_static_power(StaticPower(Platform(r["gpu_name"], r["freq_label"]), r["power_w"]))
     compositions: dict[tuple, list[dict]] = {}
     for r in conn.execute("SELECT * FROM model_kernels ORDER BY layer_idx"):
         r = dict(r)
+        if r["dtype"] not in PRECISIONS:
+            continue
         identity = (r["model_name"], r["dtype"], r["batch"], r["imgsz"], r["level"], r["direction"])
         compositions.setdefault(identity, []).append(r)
     for (model, precision, batch, size, level, direction), rows in compositions.items():
         database.add_pipeline(Pipeline(
-            pipeline_name(model, batch, size, level, direction), composition_expression(rows, known),
+            pipeline_name(model, batch, size, level, direction, precision), composition_expression(rows, known),
             {"model": model, "batch_size": batch, "input_size": size, "level": level, "direction": direction,
              "precision": precision}))
     for r in conn.execute("SELECT model_name, gpu_name, freq_label, dtype, batch, imgsz, direction, energy_j, time_s "
                           "FROM model_runs WHERE energy_j IS NOT NULL AND time_s IS NOT NULL"):
+        if r["dtype"] not in PRECISIONS:
+            continue
         database.add_model_run(ModelRun(r["model_name"], r["batch"], r["imgsz"],
-                                        Platform(r["gpu_name"], r["freq_label"], r["dtype"]),
-                                        r["time_s"], r["energy_j"], r["direction"]))
+                                        Platform(r["gpu_name"], r["freq_label"]),
+                                        r["time_s"], r["energy_j"], r["direction"], r["dtype"]))
     return database
 
 

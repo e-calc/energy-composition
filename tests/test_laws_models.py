@@ -222,7 +222,7 @@ def test_local_database_reproduces_the_published_a40_numbers(local_database):
         estimate = evaluate(pipeline.expression, local_database, A40, on_missing="report")
         if not estimate.is_complete:
             continue
-        assert estimate.energy(local_database.static_power(A40, "active_idle")) * 1e3 == pytest.approx(composed, rel=2e-3)
+        assert estimate.energy(local_database.static_power(A40)) * 1e3 == pytest.approx(composed, rel=2e-3)
         assert run.energy_joules * 1e3 == pytest.approx(measured, rel=2e-3)
         checked += 1
     if checked == 0:

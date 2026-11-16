@@ -2,7 +2,7 @@
 
     E_dyn(k)      = e_k - P * t_k
     E_pred_sum    = sum_k E_dyn(k) + P * T_sum      (== sum_k e_k, independent of P)
-    E_pred_hybrid = sum_k E_dyn(k) + P * T_e2e      (depends on the static-power definition)
+    E_pred_hybrid = sum_k E_dyn(k) + P * T_e2e      (depends on the static power)
 
 The composition itself is the energy calculus: the model is a ``Sequential`` expression over its
 kernels (``db.composition_expression``) and ``E_pred_sum`` is that expression evaluated. With
@@ -25,7 +25,6 @@ class ModelEstimate:
     gpu_name: str
     freq_label: str
     dtype: str
-    static_method: str
     static_w: float
     layers: list[dict]
     hits: int
@@ -70,26 +69,21 @@ class ModelEstimate:
         return self.rel_err(self.T_sum, self.T_e2e)
 
 
-def resolve_static_power(conn, gpu_name: str, freq_label: str, method: str, static_w: float | None = None) -> float:
-    if method == "user":
-        if static_w is None:
-            raise ValueError("--static-w required with --static-method user")
-        return float(static_w)
-    row = db.get_static(conn, gpu_name, freq_label, method)
+def resolve_static_power(conn, gpu_name: str, freq_label: str) -> float:
+    row = db.get_static(conn, gpu_name, freq_label)
     if row is None:
-        raise LookupError(f"no static_power row for ({gpu_name}, {freq_label}, {method}); run `ecalc measure static-power`")
+        raise LookupError(f"no static_power row for ({gpu_name}, {freq_label}); run `ecalc measure static-power`")
     return float(row["power_w"])
 
 
 def estimate_model(conn, model_name: str, gpu_name: str, freq_label: str, dtype: str, batch: int, imgsz: int,
-                   static_method: str = "active_idle", static_w: float | None = None,
                    level: str = "module", direction: str = FORWARD, fill: str | None = None,
                    database: SignatureDatabase | None = None) -> ModelEstimate:
     """Estimate one stored model composition. ``fill="formula"`` lets formula mode price kernels that
     have no measured row; ``database`` avoids re-reading the store when estimating several models."""
     if fill not in (None, "formula"):
         raise ValueError(f"fill must be None or 'formula', got {fill!r}")
-    P = resolve_static_power(conn, gpu_name, freq_label, static_method, static_w)
+    P = resolve_static_power(conn, gpu_name, freq_label)
     rows = db.model_composition_join(conn, model_name, gpu_name, freq_label, dtype, batch, imgsz, level=level,
                                      direction=direction)
     if not rows:
@@ -102,7 +96,7 @@ def estimate_model(conn, model_name: str, gpu_name: str, freq_label: str, dtype:
 
         source = with_formulas(database)
     expression = db.composition_expression(rows)
-    estimate = evaluate(expression, source, Platform(gpu_name, freq_label, dtype), on_missing="report")
+    estimate = evaluate(expression, source, Platform(gpu_name, freq_label), on_missing="report")
     leaves = dict(zip((leaf.name for leaf in kernels(expression)), estimate.leaves))
     layers = []
     for r in sorted(rows, key=lambda r: r["layer_idx"]):
@@ -129,7 +123,7 @@ def estimate_model(conn, model_name: str, gpu_name: str, freq_label: str, dtype:
         r["energy_share"] = (r["energy_j"] / E_sum) if (r["hit"] and E_sum) else None
     return ModelEstimate(
         model_name=model_name, gpu_name=gpu_name, freq_label=freq_label, dtype=dtype,
-        static_method=static_method, static_w=P, layers=layers, hits=hits, misses=len(layers) - hits,
+        static_w=P, layers=layers, hits=hits, misses=len(layers) - hits,
         T_sum=T_sum, E_sum=E_sum, E_dyn_sum=E_dyn, E_pred_sum=estimate.energy(P),
         E_pred_hybrid=(E_dyn + P * T_e2e) if T_e2e is not None else None,
         E_e2e=E_e2e, T_e2e=T_e2e, e2e_row=e2e, level=level, n_unique_keys=len({r["kernel_key"] for r in layers}),
@@ -153,13 +147,11 @@ def summary_lines(est: ModelEstimate) -> list[str]:
     return [
         f"model={est.model_name} level={est.level} direction={est.direction} gpu={est.gpu_name} "
         f"freq={est.freq_label} dtype={est.dtype} "
-        f"static={est.static_method} P={est.static_w:.2f} W  kernels hit {est.hits}/{est.hits + est.misses} "
+        f"static P={est.static_w:.2f} W  kernels hit {est.hits}/{est.hits + est.misses} "
         f"({est.n_unique_keys} unique keys"
         + (f", {est.estimated_kernels} priced by formula" if est.estimated_kernels else "") + ")",
-        f"  T_sum   = {_us(est.T_sum)} us   T_e2e = {_us(est.T_e2e)} us   err {_pct(est.time_err)}",
         f"  E_sum   = {_mj(est.E_pred_sum)} mJ  (= sum e_k; dyn {_mj(est.E_dyn_sum)} + static {_mj(est.static_w * est.T_sum)})",
-        f"  E_hyb   = {_mj(est.E_pred_hybrid)} mJ  (= sum E_dyn + P*T_e2e)",
-        f"  E_e2e   = {_mj(est.E_e2e)} mJ   err sum {_pct(est.energy_err_sum)}   err hybrid {_pct(est.energy_err_hybrid)}",
+        f"  E_e2e   = {_mj(est.E_e2e)} mJ   err {_pct(est.energy_err_sum)}",
     ]
 
 
@@ -206,7 +198,7 @@ def write_report(estimates: list[ModelEstimate], conn, out_dir: str | Path, mode
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     level = estimates[0].level
-    name = f"estimate_{tag or estimates[0].static_method}_{level}_{stamp}"
+    name = f"estimate_{tag + '_' if tag else ''}{level}_{stamp}"
     md = out_dir / f"{name}.md"
     csvp = out_dir / f"{name}_layers.csv"
     lines = [f"# Kernel-DB energy estimate, level={level} ({stamp})", "",
@@ -219,8 +211,9 @@ def write_report(estimates: list[ModelEstimate], conn, out_dir: str | Path, mode
                      f"{_pct(e.time_err)} | {_mj(e.E_pred_sum)} | {_mj(e.E_pred_hybrid)} | {_mj(e.E_e2e)} | "
                      f"{_pct(e.energy_err_sum)} | {_pct(e.energy_err_hybrid)} |")
     lines.append("")
-    for s in db.list_static(conn, estimates[0].gpu_name, estimates[0].freq_label):
-        lines.append(f"- static_power[{s['method']}] = {s['power_w']:.2f} W (n={s['n_samples']}, {s['notes'] or ''})")
+    s = db.get_static(conn, estimates[0].gpu_name, estimates[0].freq_label)
+    if s is not None:
+        lines.append(f"- static power = {s['power_w']:.2f} W (n={s['n_samples']}, {s['notes'] or ''})")
     lines.append("")
     for e in estimates:
         lines += [f"## {e.model_name}", "", "```"] + summary_lines(e) + ["", per_layer_table(e), "```", ""]
@@ -265,16 +258,20 @@ def _draw_energy_panel(ax, estimates: list[ModelEstimate], label_font_size: floa
     ax.legend()
 
 
-def plot_energy(estimates: list[ModelEstimate], out_path: str | Path, font_size: float = 15) -> Path:
-    """The energy panel alone, without a title and with large text: the figure used in the README."""
+def plot_energy(estimates: list[ModelEstimate] | list[list[ModelEstimate]], out_path: str | Path,
+                font_size: float = 15) -> Path:
+    """The energy panel alone, without a title and with large text: the figure used in the README.
+    Pass several lists of estimates to draw them side by side in one image, one panel per list."""
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    panels = estimates if estimates and isinstance(estimates[0], list) else [estimates]
     with plt.rc_context({"font.size": font_size, "legend.fontsize": font_size - 1}):
-        fig, ax = plt.subplots(figsize=(6.4, 4.6), tight_layout=True)
-        _draw_energy_panel(ax, estimates, label_font_size=font_size - 1)
+        fig, axes = plt.subplots(1, len(panels), figsize=(6.4 * len(panels), 4.6), tight_layout=True, squeeze=False)
+        for ax, panel in zip(axes[0], panels):
+            _draw_energy_panel(ax, panel, label_font_size=font_size - 1)
         out_path = Path(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(out_path, dpi=130)

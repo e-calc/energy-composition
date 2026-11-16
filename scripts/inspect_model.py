@@ -29,7 +29,7 @@ def main() -> None:
     ap.add_argument("--level", choices=list(C.LEVELS), default="module")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
-    set_precision(False)
+    set_precision()
     names = parse_model_list(args.models)
     key_models: dict[str, set[str]] = defaultdict(set)
     key_desc: dict[str, str] = {}

@@ -39,21 +39,6 @@ def nvml_handle_for_torch_device(idx: int = 0):
     return pynvml.nvmlDeviceGetHandleByUUID(f"GPU-{uuid}".encode() if not uuid.startswith("GPU-") else uuid.encode())
 
 
-def nvml_handle_for_visible_index(idx: int = 0):
-    """NVML handle for CUDA-visible device ``idx`` WITHOUT touching torch.cuda (no CUDA context)."""
-    import os
-
-    nvml_init()
-    vis = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if vis:
-        ids = [v.strip() for v in vis.split(",") if v.strip()]
-        sel = ids[idx]
-        if sel.startswith("GPU-") or sel.startswith("MIG-"):
-            return pynvml.nvmlDeviceGetHandleByUUID(sel.encode())
-        return pynvml.nvmlDeviceGetHandleByIndex(int(sel))
-    return pynvml.nvmlDeviceGetHandleByIndex(int(idx))
-
-
 def nvml_index(handle) -> int:
     return int(pynvml.nvmlDeviceGetIndex(handle))
 

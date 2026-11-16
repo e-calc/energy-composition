@@ -52,7 +52,7 @@ class MeasureConfig:
     warmup_settle_s: float | None = None  # run the workload this long before each window (replaces num_warmup)
     repeats: int = 1
     clock_sample_period_s: float = 0.05
-    dtype: str = "fp32"          # "fp32" (TF32 allowed, Ampere default) or "fp32_strict"
+    dtype: str = "fp32"          # precision label; fp32 with TF32 allowed is the only one supported
     freq_label: str = "default"  # "default" = unlocked clocks; str(mhz) when a lock succeeded
     profile_kernel_time: bool = False
     lock_mhz: int | None = None

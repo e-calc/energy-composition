@@ -101,7 +101,6 @@ def main() -> None:
     parser.add_argument("--pairs", default="yolo26n:1+rf_vgg:32,yolo26m:8+yolo26n:8",
                         help="comma list of model:batch+model:batch")
     parser.add_argument("--store", default=str(C.DB_PATH), help="measurement store holding the static power")
-    parser.add_argument("--static-power", default="active_idle", help="stored method or a number of watts")
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--duration", type=float, default=8.0, help="seconds of each measurement window")
     parser.add_argument("--warmup", type=float, default=2.0)
@@ -111,18 +110,15 @@ def main() -> None:
 
     device = f"cuda:{args.device}"
     torch.cuda.set_device(args.device)
-    set_precision(False)
+    set_precision()
     handle = nvml_handle_for_torch_device(args.device)
     gpu = gpu_name(handle)
-    try:
-        static_watts = float(args.static_power)
-    except ValueError:
-        row = db.get_static(db.connect(args.store), gpu, "default", args.static_power)
-        if row is None:
-            sys.exit(f"no static power {args.static_power!r} for {gpu} in {args.store}; pass --static-power <watts>")
-        static_watts = float(row["power_w"])
+    row = db.get_static(db.connect(args.store), gpu, "default")
+    if row is None:
+        sys.exit(f"no static power for {gpu} in {args.store}; run `ecalc measure static-power`")
+    static_watts = float(row["power_w"])
     monitor = make_monitor(args.device)
-    print(f"{gpu}, static power {static_watts:.1f} W ({args.static_power}), persistence mode "
+    print(f"{gpu}, static power {static_watts:.1f} W, persistence mode "
           f"{'on' if persistence_mode_on(handle) else 'OFF'}; windows of {args.duration:.0f} s, median of {args.repeats}")
 
     results = []

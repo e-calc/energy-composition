@@ -24,17 +24,16 @@ E = s·T + d
 | `d` | dynamic energy: everything above the static floor | joule |
 
 What is measured is the pair `(T, E)`. Static power is measured separately, once per GPU, and
-`d = E − s·T` is derived. Dynamic energy is deliberately not stored: several definitions of
-static power exist (see [measurement.md](measurement.md)), and a database of `(T, E)` pairs can
-be decomposed under any of them.
+`d = E − s·T` is derived, so dynamic energy is not stored. How static power is measured is in
+[measurement.md](measurement.md).
 
 ```python
 from ecalc.calculus import load
 
 database = load("data/signature_database.jsonl")
-platform = database.platforms()[0]                    # e.g. A40/default/fp32
+platform = database.platforms()[0]                    # e.g. A40/default
 signature = database.signatures(platform)[0]
-s, T, d = signature.decompose(database.static_power(platform, "active_idle"))
+s, T, d = signature.decompose(database.static_power(platform))
 assert abs(s * T + d - signature.energy_joules) < 1e-12
 ```
 
@@ -49,7 +48,10 @@ document, the *structural signature*:
 - the shape and dtype of every input tensor;
 - `layout` of an input, written only when it is `channels_last`;
 - `direction`, written only when it is `backward` (with `input_gradient: false` when the
-  gradient with respect to the inputs is not computed).
+  gradient with respect to the inputs is not computed);
+- `precision`, written only when it is not the default. The default, and the only precision
+  supported so far, is `fp32`: 32-bit floats with TF32 allowed for convolutions and matrix
+  products.
 
 The **key** is the first 16 hex digits of the SHA-256 of that document. Where a module sits in a
 model is not part of it, so the same block on the same input shape shares one key across models.
@@ -58,8 +60,14 @@ Batch size is part of the input shape, so it is part of the key.
 Fields written only when they differ from the default keep keys stable: a key computed before a
 field existed is still the key of the same kernel.
 
-A **platform** is `(gpu_name, frequency_label, precision)`, for example `A40/default/fp32`.
-Signatures of different platforms never mix; `evaluate` raises `PlatformMismatch`.
+A **platform** is the hardware: `(gpu_name, frequency_label)`, for example `A40/default`, where
+`default` means the clocks were left to the driver. Signatures of different platforms never mix;
+`evaluate` raises `PlatformMismatch`.
+
+Precision is not part of the platform. It is how a kernel is run, so it belongs to the kernel and
+therefore to the pipeline: a pipeline's kernels carry their precision and its `precision`
+attribute records it. Only `fp32` is supported today; the `--precision` option and the field are
+there so that another precision can be added as a different set of kernels on the same GPU.
 
 ## Composition
 
@@ -95,8 +103,8 @@ E = energy_joules + s · (time_seconds − busy_seconds)        which equals  s�
 ```
 
 For a sequential cost the two times are equal and the energy is the plain sum of measured
-energies for any `s`. This is why a sequential estimate does not depend on which definition of
-static power you choose, while an overlap estimate does.
+energies for any `s`. This is why a sequential estimate does not depend on the static power,
+while an overlap estimate does.
 
 ```python
 from ecalc.calculus import Cost, parallel, sequential
@@ -118,7 +126,7 @@ from ecalc.calculus import Parallel, Sequential, evaluate, pipeline_name
 
 yolo = database.pipeline(pipeline_name("yolo26n", batch_size=1, input_size=640)).expression
 vgg = database.pipeline(pipeline_name("rf_vgg", batch_size=32, input_size=1024)).expression
-static_power = database.static_power(platform, "active_idle")
+static_power = database.static_power(platform)
 
 alone = evaluate(yolo, database, platform)
 together = evaluate(Parallel((yolo, vgg)), database, platform)
@@ -164,8 +172,7 @@ negative. The calculus never clamps: clamping would invent energy.
 - A sequential estimate does not depend on `s`, so it is never affected.
 - `Estimate.energy(...)` raises `NegativeDynamicEnergy` when an **overlapped** kernel has
   `d < 0`, because then the static power does not fit that kernel and the overlap saving is not
-  trustworthy. Pass `negative_dynamic="warn"` or `"allow"` to proceed, or use a static power
-  definition below the kernel's average power.
+  trustworthy. Pass `negative_dynamic="warn"` or `"allow"` to proceed.
 
 ### What the calculus assumes
 
@@ -216,7 +223,7 @@ and round-trip bit for bit.
 {"schema": "ecalc.signature/1", "key": "1a2658234970b8d3",
  "kernel": {"sig_version": 1, "module": {"cls": "Conv", "...": "..."},
             "input": {"kind": "tensor", "shape": [1, 3, 640, 640], "dtype": "float32"}},
- "platform": {"gpu_name": "A40", "frequency_label": "default", "precision": "fp32"},
+ "platform": {"gpu_name": "A40", "frequency_label": "default"},
  "time_seconds": 6.911e-05, "energy_joules": 0.020677, "provenance": "measured"}
 ```
 

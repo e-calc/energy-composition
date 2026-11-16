@@ -35,6 +35,6 @@ Tests that need torch are skipped there. Tests marked `gpu` need a CUDA GPU.
 
 ## Reporting results
 
-Say which GPU, driver, library versions and static power definition the numbers come from, and
+Say which GPU, driver, library versions and static power the numbers come from, and
 whether persistence mode was on. Report composition error against a whole-model measurement
 taken with the same protocol.

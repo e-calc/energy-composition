@@ -10,19 +10,20 @@ from ecalc.formula import with_formulas
 
 database = load(sys.argv[1] if len(sys.argv) > 1 else "data/signature_database.jsonl")
 platform = database.platforms()[0]
-static_power = database.static_power(platform, "active_idle")
+static_power = database.static_power(platform)
 
 # One model: a sequence of kernels. Its energy is the sum of the kernel energies.
 yolo = database.pipeline(pipeline_name("yolo26n", batch_size=1, input_size=640)).expression
 estimate = evaluate(yolo, database, platform)
-print(f"yolo26n            {estimate.energy(static_power) * 1e3:8.1f} mJ in {estimate.time_seconds * 1e6:8.1f} us")
+print(f"yolo26n            {estimate.energy(static_power) * 1e3:8.1f} mJ")
 print(f"  static  s*T      {estimate.static_energy(static_power) * 1e3:8.1f} mJ")
 print(f"  dynamic d        {estimate.dynamic_energy(static_power) * 1e3:8.1f} mJ")
 
 # The signature of one kernel, in the form E = s*T + d.
 first = estimate.leaves[0].signature
 s, t, d = first.decompose(static_power)
-print(f"first kernel       {first.kernel.description}: s = {s:.1f} W, T = {t * 1e6:.1f} us, d = {d * 1e3:.3f} mJ")
+print(f"first kernel       {first.kernel.description}: E = {first.energy_joules * 1e3:.3f} mJ "
+      f"= static s*T {s * t * 1e3:.3f} mJ + dynamic d {d * 1e3:.3f} mJ")
 
 # Two models overlapped on the same GPU: static power is paid once, over the longer one.
 vgg = database.pipeline(pipeline_name("rf_vgg", batch_size=32, input_size=1024)).expression

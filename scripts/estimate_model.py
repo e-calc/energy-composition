@@ -22,7 +22,7 @@ def main() -> None:
     ap.add_argument("--db", default=str(C.DB_PATH))
     ap.add_argument("--gpu", default=None, help="gpu_name in the DB (default: the only one present)")
     ap.add_argument("--freq", default="default")
-    ap.add_argument("--dtype", default="fp32")
+    ap.add_argument("--dtype", default="fp32", choices=["fp32"], help="precision label; only fp32 is supported")
     ap.add_argument("--batch", type=int, default=C.BATCH)
     ap.add_argument("--imgsz", type=int, default=None,
                     help="YOLO image size (default 640) or RFML IQ frame length (default 1024)")
@@ -33,9 +33,6 @@ def main() -> None:
                     help="price kernels without a measured row by interpolation / the light-op formula")
     ap.add_argument("--compare-levels", action="store_true",
                     help="also estimate at the other level and print the per-block leaf-vs-module and DB-size tables")
-    ap.add_argument("--static-method", choices=["active_idle", "post_burst", "p8_idle", "user"],
-                    default="active_idle")
-    ap.add_argument("--static-w", type=float, default=None)
     ap.add_argument("--allow-miss", action="store_true", help="report even when some kernels are missing")
     ap.add_argument("--plot", action="store_true")
     ap.add_argument("--no-layers", action="store_true", help="do not print per-layer tables")
@@ -57,7 +54,7 @@ def main() -> None:
     vnames = [variant_name(n, not args.one2many) for n in names]
     ests = []
     for v in vnames:
-        e = estimate_model(conn, v, gpu, args.freq, args.dtype, args.batch, args.imgsz, args.static_method, args.static_w,
+        e = estimate_model(conn, v, gpu, args.freq, args.dtype, args.batch, args.imgsz,
                            level=args.level, direction=args.direction, fill=args.fill)
         if e.misses and not args.allow_miss:
             sys.exit(f"{v}: {e.misses} kernels missing from the DB (use --allow-miss or run build_kernel_db.py "
@@ -80,7 +77,7 @@ def main() -> None:
         for v in vnames:
             try:
                 level_ests[other].append(estimate_model(conn, v, gpu, args.freq, args.dtype, args.batch, args.imgsz,
-                                                        args.static_method, args.static_w, level=other))
+                                                        level=other))
             except LookupError as ex:
                 print(f"WARNING: {ex}")
         level_ests = {lv: level_ests[lv] for lv in C.LEVELS if level_ests.get(lv)}

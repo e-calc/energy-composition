@@ -99,12 +99,13 @@ def make_input(device: str | torch.device = "cuda", seed: int = INPUT_SEED, shap
     return torch.randn(shape, generator=g, dtype=torch.float32).to(device)
 
 
-def set_precision(strict_fp32: bool = False) -> str:
-    """Return the dtype label. Ampere runs fp32 conv/matmul in TF32 by default."""
+def set_precision() -> str:
+    """Set up the one supported precision and return its label: fp32, with TF32 allowed for
+    convolutions and matrix products. cuDNN autotuning is turned off."""
     torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.allow_tf32 = not strict_fp32
-    torch.backends.cuda.matmul.allow_tf32 = not strict_fp32
-    return "fp32_strict" if strict_fp32 else "fp32"
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+    return "fp32"
 
 
 def precision_flags() -> dict:

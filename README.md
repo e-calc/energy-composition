@@ -14,11 +14,11 @@ and composing them.
 What is in the box:
 
 - **The calculus** (`ecalc.calculus`): the signature schema, the two composition operators,
-  expression trees for pipelines, and JSON serialization. Standard library only.
+expression trees for pipelines, and JSON serialization. Standard library only.
 - **Measurement** (`ecalc measure`): per-kernel time and energy on your GPU with
-  [Zeus](https://ml.energy/zeus/), measured static power, forward and backward passes.
+[Zeus](https://ml.energy/zeus/), measured static power, forward and backward passes.
 - **Estimation** (`ecalc estimate`, `ecalc compose`): the energy of a model or of any pipeline
-  from a signature database. No GPU needed.
+from a signature database. No GPU needed.
 - **Formula mode** (optional): interpolate kernels you did not measure, clearly labelled.
 
 Models supported out of the box: YOLO26 n/s/m/l/x (Ultralytics) and three RFML modulation
@@ -61,8 +61,8 @@ With a signature database, a model is an expression over its kernels:
 from ecalc.calculus import evaluate, load, pipeline_name
 
 database = load("data/signature_database.jsonl")
-platform = database.platforms()[0]                                  # e.g. A40/default/fp32
-static_power = database.static_power(platform, "active_idle")
+platform = database.platforms()[0]                                  # e.g. A40/default
+static_power = database.static_power(platform)
 
 yolo = database.pipeline(pipeline_name("yolo26n", batch_size=8, input_size=640)).expression
 
@@ -76,29 +76,27 @@ The definitions, the algebraic laws and the file formats are in
 
 | Command | What it does | Needs |
 |---|---|---|
-| `ecalc estimate --model yolo26n --batch-size 8` | energy and time of a model, split into static and dynamic, with the error against the whole-model measurement when one is stored | a database |
+| `ecalc estimate --model yolo26n --batch-size 8` | energy of a model, split into static and dynamic, with the error against the whole-model measurement when one is stored | a database |
 | `ecalc compose examples/two_models_one_gpu.json` | energy and time of any sequential / parallel pipeline | a database |
 | `ecalc plan --model yolo26n --batch-size 4` | which kernels are measured, which formula mode can fill, which are missing | a database |
 | `ecalc inspect --model rf_vgg --batch-size 32` | the kernels of a model and their keys | torch (CPU) |
 | `ecalc measure static-power \| kernels \| model` | measure on your GPU into `data/ecalc.sqlite` | a CUDA GPU |
 | `ecalc export` | write the store as `data/signature_database.jsonl` | — |
 
-Useful options: `--direction backward`, `--level leaf`, `--static-power p8_idle` (or a number of
-watts), `--fill formula`, `--kernels` (per-kernel table), `--json`.
+Useful options: `--direction backward`, `--level leaf`, `--fill formula`, `--kernels` (per-kernel
+table), `--json` (which also carries the times).
 
 ```text
 $ ecalc estimate --model yolo26n --batch-size 8
 yolo26n: batch size 8, input size 640, module level, forward
-  platform            A40/default/fp32, static power 89.7 W (active_idle)
+  platform            A40/default, static power 89.7 W
   kernels             24 (24 unique)
-  time                10,474.5 us
   energy              2,742.7 mJ
     static  s*T       939.5 mJ
     dynamic d         1,803.1 mJ
   by provenance       measured 24 kernels, 2,742.7 mJ
-  measured end to end 2,748.8 mJ in 9,558.5 us
-    composition error -0.2% energy, +9.6% time
-    with measured time 2,660.5 mJ (dynamic + static power x measured time), error -3.2%
+  measured end to end 2,748.8 mJ
+    composition error -0.2%
 ```
 
 `estimate`, `compose` and `plan` read the database given by `--database`, else
@@ -111,7 +109,7 @@ machine (`data/` is git-ignored).
 
 ```bash
 sudo nvidia-smi -i 0 -pm 1                                   # once: GPU persistence mode
-ecalc measure static-power --models yolo26n --auto-window --with-p8
+ecalc measure static-power --models yolo26n --auto-window
 ecalc measure kernels --models all --batch-size 8            # each unique kernel, alone; resumable
 ecalc measure model   --models all --batch-size 8            # whole models, as the reference
 ecalc export                                                 # -> data/signature_database.jsonl
@@ -120,7 +118,7 @@ ecalc estimate --model all --batch-size 8
 
 Add `--direction backward` to `measure kernels` and `measure model` for the backward pass, and
 `--models rfml` for the RFML classifiers. `scripts/run_all.sh` runs the whole sequence. The
-protocol, the static power definitions and the pitfalls are in
+protocol, how static power is measured and the pitfalls are in
 [docs/measurement.md](docs/measurement.md).
 
 ## Formula mode: skip measurements you can estimate
@@ -144,42 +142,18 @@ Each model's forward pass is estimated as a `sequential` of its kernels, which i
 measured kernel energies, and compared with a measurement of the whole model. The estimate uses
 no whole-model measurement.
 
-<p align="center">
-  <img src="docs/figures/yolo26_a40_batch8.png" width="49%" alt="YOLO26 n, s, m, l and x at batch size 8: composed energy per forward pass as stacked static and dynamic bars, with the measured whole-model energy marked above each bar. Errors are -0.2%, -1.2%, -1.1%, -1.0% and -0.9%.">
-  <img src="docs/figures/rfml_a40_batch256.png" width="49%" alt="rf_vgg, rf_resnet and rf_lstm at batch size 256: composed energy per forward pass as stacked static and dynamic bars, with the measured whole-model energy marked above each bar. Errors are +2.5%, +1.5% and +0.2%.">
-</p>
+![Composed energy per forward pass as stacked static and dynamic bars, with the measured whole-model energy marked above each bar. Left: YOLO26 n, s, m, l and x at batch size 8, errors -0.2%, -1.2%, -1.1%, -1.0% and -0.9%. Right: rf_vgg, rf_resnet and rf_lstm at batch size 256, errors +2.5%, +1.5% and +0.2%.](docs/figures/yolo26_rfml_a40.png)
 
 Left: YOLO26 at batch size 8, 640 × 640 images. Right: RFML at batch size 256, 2 × 1024 IQ
 frames. A bar is the composed energy, split into static (`s·T`, with `s` = 89.7 W) and dynamic;
 the black line is the measured whole model, and the label is the error of the composed energy.
 
 - **YOLO26.** The composed energy is within 1.2% of the measurement for all five models, from
-  2.7 J (yolo26n) to 27 J (yolo26x) per forward pass.
+2.7 J (yolo26n) to 27 J (yolo26x) per forward pass.
 - **RFML.** The composed energy is within 2.5% for the three models, from 0.6 J to 5 J.
-- **Static power.** Between 30% and 35% of the energy of every model is static, the part that
-  overlap can save.
+- **Static power.** Between 30% and 35% of the energy of every model is static.
 
-Setup: one NVIDIA A40 with a 300 W power cap, FP32 with TF32, PyTorch 2.14, fused models; energy
-measured with Zeus over 5 s windows, median of 3 repeats; persistence mode off.
-
-## Limitations
-
-- **One GPU model so far.** All results are from a single NVIDIA A40. Signatures do not
-  transfer between GPUs; the method does.
-- **Kernels are assumed independent.** A kernel's time and dynamic energy are taken to be the
-  same inside a composition as when measured alone. Launch overhead that is hidden inside a
-  model, cache effects between kernels, and contention between overlapped kernels are not
-  modelled; they are the composition errors reported above.
-- **Backward is the inference graph's backward.** Convolutions are fused with batch
-  normalization, and there is no loss or optimizer. It is not the energy of a training step.
-  Backward is captured at module level only, and composes less well than forward: in a check on
-  the A40, the composed backward energy was within 1.3% of the whole-model backward for YOLO26
-  at batch size 8, but 4% to 15% high at batch size 1 and up to 35% high for the RFML models.
-- **Exact keys.** Batch size, input size and dtype are part of a kernel's key. Without formula
-  mode, a new batch size needs new measurements.
-- **Wall time.** A kernel's time is wall time per call, including launch gaps. Small kernels at
-  batch 1 are launch-bound, which is where composition is least accurate: the forward error
-  reaches 5.0% for yolo26n at batch size 1.
+Setup: one NVIDIA A40 with a 300 W power cap, FP32 with TF32, PyTorch 2.14.
 
 ## Repository layout
 
@@ -190,7 +164,7 @@ ecalc/command_line.py     the ecalc command
 ecalc/signature.py        structural signature of a torch module or functional op -> kernel key
 ecalc/capture.py          a model's kernels with their real inputs: module level, leaf level, backward
 ecalc/measure.py          the Zeus measurement of one kernel or one whole model
-ecalc/static_power.py     active_idle / post_burst / p8_idle
+ecalc/static_power.py     static power: the GPU awake and idle
 ecalc/db.py               SQLite measurement store and its bridge to the calculus
 ecalc/estimate.py         per-layer reports, level comparison, plots
 ecalc/models.py, rfml.py  YOLO26 and RFML model registry
@@ -202,13 +176,14 @@ docs/                     formalism.md, measurement.md, formula.md, figures/
 
 ## Acknowledgements
 
-Energy is measured with [Zeus](https://ml.energy/zeus/). The overlap rule — concurrent kernels
-pay static power once — follows "Energy Calculus: A Compositional Algebra of Energy in
-Computational Systems" (arXiv 2607.11087). Interpolation, the bytes-moved model for light
-operations, and provenance labels were first tried in
-[Jigsaw](https://github.com/ml-energy/jigsaw), which builds on NVIDIA's
-[aiconfigurator](https://github.com/ai-dynamo/aiconfigurator). The RFML architectures follow
-O'Shea, Roy and Clancy (2018) and Rajendran et al. (2018).
+e-calc is based on "Energy Calculus: A Compositional Algebra of Energy in Computational Systems"
+(arXiv 2607.11087). Energy is measured with [Zeus](https://ml.energy/zeus/).
+
+The YOLO26 models are from Jocher et al., "Ultralytics YOLO26: Unified Real-Time End-to-End
+Vision Models" (arXiv 2606.03748). The RFML models follow O'Shea, Roy and Clancy, "Over-the-Air
+Deep Learning Based Radio Signal Classification" (2018), for rf_vgg and rf_resnet, and Rajendran
+et al., "Deep Learning Models for Wireless Signal Classification with Distributed Low-Cost
+Spectrum Sensors" (2018), for rf_lstm.
 
 ## License
 

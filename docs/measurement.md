@@ -17,7 +17,7 @@ Without persistence mode the commands refuse to measure unless you pass
 ## The three commands
 
 ```bash
-ecalc measure static-power --models yolo26n --auto-window --with-p8     # s, three definitions
+ecalc measure static-power --models yolo26n --auto-window               # s, once per GPU
 ecalc measure kernels --models all --batch-size 1                       # every unique kernel, alone
 ecalc measure model   --models all --batch-size 1                       # the whole model: the reference
 ecalc export                                                            # store -> signature database
@@ -38,7 +38,6 @@ committed as soon as it is measured.
 | `--direction forward\|backward` | backward is module level only |
 | `--repeats`, `--measurement-duration`, `--cooldown` | the protocol below |
 | `--fill formula` | do not measure kernels that formula mode can already estimate |
-| `--strict-fp32` | disable TF32; rows get precision `fp32_strict` |
 
 ## Protocol
 
@@ -59,8 +58,8 @@ The stored values are per call: `time_s = window time / calls` and
 `energy_j = window energy / calls`. Time is wall time, so it includes the gaps between GPU
 kernels (Python and launch overhead), exactly as a real forward pass does.
 
-Forward kernels run eagerly under `torch.inference_mode()`. cuDNN autotuning is off; TF32 is on
-unless `--strict-fp32`. A background sampler records clocks, P-state and temperature during the
+Forward kernels run eagerly under `torch.inference_mode()`. cuDNN autotuning is off and TF32 is on
+(precision `fp32`). A background sampler records clocks, P-state and temperature during the
 window; a temperature rise above 5 °C or a clock dip is written to the row's `notes`.
 
 The whole-model run uses the identical protocol. A composition and its reference are therefore
@@ -68,17 +67,14 @@ compared like for like.
 
 ## Static power
 
-`s` is measured, not assumed. `ecalc measure static-power` stores three definitions:
+`s` is measured, not assumed. It is the **active-idle** power: the floor under repeated
+inference in a process that holds a CUDA context. `ecalc measure static-power` runs the model
+for 2 s, waits 1 s for the transient to decay, then measures a 1 s window while the GPU is
+still awake at P0. It repeats this 20 times, rejects the cycles where the GPU had already
+ramped down, and stores the median. On the A40 this is 89.7 W.
 
-| Method | How | Use |
-|---|---|---|
-| `active_idle` | run the model for 2 s, wait 1 s, then measure a 1 s window while the GPU is awake at P0 | the default: the floor under repeated inference in a process that holds a CUDA context |
-| `post_burst` | a 0.2 s window immediately after the burst | reference: includes the decaying transient |
-| `p8_idle` | the sleeping GPU, before any CUDA context exists | the absolute floor |
-
-Choose one at estimation time with `--static-power <method>`, or pass a number of watts. A
-sequential estimate is the same under all of them; the split into static and dynamic energy,
-and any overlap saving, are not.
+A sequential estimate does not depend on `s`. The split into static and dynamic energy, and
+any overlap saving, do.
 
 ## Granularity
 

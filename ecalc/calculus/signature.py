@@ -5,8 +5,8 @@ A signature stores what is measured, ``(T, E)``. The form of the calculus,
 
     d = E - s*T
 
-Dynamic energy is not stored, because that would bake one definition of static power into
-every row; the same database can be decomposed under another one.
+Dynamic energy is not stored: it is derived from the pair and the platform's static power, which
+is measured separately, once per GPU.
 """
 
 from __future__ import annotations
@@ -29,22 +29,20 @@ two measured kernels of its family, a line extended past the measured range, or 
 
 @dataclasses.dataclass(frozen=True)
 class Platform:
-    """The hardware and numeric setting a signature is valid for."""
+    """The hardware a signature is valid for: a GPU model at a clock setting."""
 
     gpu_name: str
     frequency_label: str = "default"  # "default" = unlocked clocks; the locked megahertz otherwise
-    precision: str = "fp32"           # "fp32" (TF32 allowed) or "fp32_strict"
 
     def __str__(self) -> str:
-        return f"{self.gpu_name}/{self.frequency_label}/{self.precision}"
+        return f"{self.gpu_name}/{self.frequency_label}"
 
 
 @dataclasses.dataclass(frozen=True)
 class StaticPower:
-    """One definition of a platform's static power, in watts."""
+    """A platform's static power, in watts: what the GPU draws while awake and doing nothing."""
 
     platform: Platform
-    method: str  # "active_idle", "post_burst", "p8_idle" or "user"
     watts: float
 
     def __post_init__(self) -> None:
@@ -56,11 +54,9 @@ class StaticPower:
 
 def static_power_watts(static_power: "StaticPower | float", platform: Platform | None = None) -> float:
     """Watts of a ``StaticPower`` or a plain number. A ``StaticPower`` must belong to ``platform``
-    when one is given; only the GPU and clock setting are compared, static power does not depend
-    on numeric precision."""
+    when one is given."""
     if isinstance(static_power, StaticPower):
-        if platform is not None and (static_power.platform.gpu_name, static_power.platform.frequency_label) != (
-                platform.gpu_name, platform.frequency_label):
+        if platform is not None and static_power.platform != platform:
             raise PlatformMismatch(f"static power of {static_power.platform} used with {platform}")
         return static_power.watts
     watts = float(static_power)

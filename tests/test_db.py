@@ -41,9 +41,9 @@ def test_join_reports_misses(tmp_path):
 
 def test_static_and_export(tmp_path):
     conn = db.connect(tmp_path / "t.sqlite")
-    db.upsert_static(conn, dict(gpu_name="A40", freq_label="default", method="active_idle", power_w=70.0,
+    db.upsert_static(conn, dict(gpu_name="A40", freq_label="default", power_w=70.0,
                                 n_samples=3, samples_json=json.dumps([1, 2, 3]), measured_at="now"))
-    assert db.get_static(conn, "A40", "default", "active_idle")["power_w"] == 70.0
+    assert db.get_static(conn, "A40", "default")["power_w"] == 70.0
     paths = db.export_csv(conn, tmp_path / "export")
     assert {p.name for p in paths} == {"kernel_energy.csv", "static_power.csv", "model_runs.csv", "model_kernels.csv"}
     text = (tmp_path / "export" / "static_power.csv").read_text()
@@ -172,7 +172,9 @@ def test_store_as_a_signature_database(tmp_path):
     conn = db.connect(tmp_path / "t.sqlite")
     db.upsert_kernel(conn, dict(_kernel_row(key, e=0.5), signature_json=json.dumps(signature)))
     db.upsert_kernel(conn, _kernel_row("legacy", e=1.0))  # its stored structure does not hash to its key
-    db.upsert_static(conn, dict(gpu_name="A40", freq_label="default", method="active_idle", power_w=90.0))
+    db.upsert_static(conn, dict(gpu_name="A40", freq_label="default", power_w=90.0))
+    # a row left by an older store under another definition is ignored
+    conn.execute("INSERT INTO static_power (gpu_name, freq_label, method, power_w) VALUES ('A40', 'default', 'p8_idle', 23.0)")
     rows = [dict(r, kernel_key=k, signature_json=s) for r, (k, s) in zip(
         _comp("module", 3), [(key, json.dumps(signature)), ("legacy", None), ("unmeasured", None)])]
     db.replace_model_kernels(conn, "m", "fp32", 1, 640, rows)
@@ -180,11 +182,37 @@ def test_store_as_a_signature_database(tmp_path):
                                    imgsz=640, energy_j=1.6, time_s=0.0021))
     database = db.signature_database(conn)
     platform = Platform("A40")
-    assert len(database) == 2 and database.static_power(platform, "active_idle").watts == 90.0
+    assert len(database) == 2 and database.static_power(platform).watts == 90.0
     pipeline = database.pipeline("m/batch_size=1/input_size=640/module/forward")
     estimate = evaluate(pipeline.expression, database, platform, on_missing="report")
     assert [leaf.signature is not None for leaf in estimate.leaves] == [True, True, False]
     assert estimate.leaves[0].specification.is_resolved and not estimate.leaves[1].specification.is_resolved
     assert estimate.cost.energy_joules == 1.5
     assert database.model_run("m", 1, 640, platform).energy_joules == 1.6
+    assert load(db.export_signature_database(conn, tmp_path / "export.jsonl")) == database
+
+
+def test_precision_of_a_stored_composition_is_carried_by_its_pipeline(tmp_path):
+    from ecalc.calculus import KernelSpecification, Platform, evaluate, load, pipeline_name
+
+    signature = {"sig_version": 1, "op": {"name": "add", "args": [], "kwargs": {}},
+                 "input": {"kind": "list", "items": [{"shape": [1, 4], "dtype": "float32"}] * 2}}
+    base = KernelSpecification.from_signature(signature)
+    conn = db.connect(tmp_path / "t.sqlite")
+    # the second precision is one an older store may hold; it is no longer supported and is left out
+    for precision, energy in (("fp32", 0.5), ("fp32_strict", 0.75)):
+        db.upsert_kernel(conn, dict(_kernel_row(base.key, e=energy), dtype=precision, signature_json=json.dumps(signature)))
+        row = dict(_comp("module", 1)[0], dtype=precision, kernel_key=base.key, signature_json=json.dumps(signature))
+        db.replace_model_kernels(conn, "m", precision, 1, 640, [row])
+        db.upsert_model_run(conn, dict(model_name="m", gpu_name="A40", freq_label="default", dtype=precision, batch=1,
+                                       imgsz=640, energy_j=energy, time_s=0.001))
+    database = db.signature_database(conn)
+    platform = Platform("A40")
+    assert database.platforms() == [platform] and len(database) == 1
+    assert [p.name for p in database.pipelines()] == [pipeline_name("m", 1, 640)]
+    (pipeline,) = database.pipelines()
+    assert pipeline.attributes["precision"] == "fp32"
+    (leaf,) = evaluate(pipeline.expression, database, platform).leaves
+    assert leaf.specification == base and leaf.specification.precision == "fp32" and leaf.signature.energy_joules == 0.5
+    assert [run.energy_joules for run in database.model_runs()] == [0.5]
     assert load(db.export_signature_database(conn, tmp_path / "export.jsonl")) == database

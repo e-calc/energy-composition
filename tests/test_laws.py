@@ -239,7 +239,7 @@ def test_lower_bound_fails_when_a_kernel_draws_less_than_the_static_power():
 # ---- the same numbers as the reference rule ---------------------------------------------------
 
 def _reference_segment(times, energies, static_watts):
-    """``price_segment`` of Jigsaw's overlap.py: T = max T_i, E = s*T + sum(E_i - s*T_i)."""
+    """The overlap rule written out directly: T = max T_i, E = s*T + sum(E_i - s*T_i)."""
     return max(times), static_watts * max(times) + math.fsum(e - static_watts * t for e, t in zip(energies, times))
 
 
@@ -326,7 +326,7 @@ def test_signatures_of_another_platform_are_not_used():
         evaluate(Kernel(specification), database, PLATFORM)
     estimate = evaluate(Kernel(specification), database, Platform("A100"))
     with pytest.raises(PlatformMismatch):
-        estimate.energy(StaticPower(PLATFORM, "active_idle", 90.0))
+        estimate.energy(StaticPower(PLATFORM, 90.0))
 
 
 def test_negative_dynamic_energy_matters_only_under_overlap():

@@ -17,8 +17,7 @@ from ecalc.command_line import main
 def database_path(fixture_pipelines, tmp_path):
     """yolo26n (batch 1) and rf_vgg (batch 4), forward, with synthetic costs and a reference run."""
     database = SignatureDatabase()
-    database.add_static_power(StaticPower(PLATFORM, "active_idle", 90.0))
-    database.add_static_power(StaticPower(PLATFORM, "p8_idle", 23.0))
+    database.add_static_power(StaticPower(PLATFORM, 90.0))
     for stem, model, size in (("yolo26n_module_forward", "yolo26n", 640), ("rf_vgg_module_forward", "rf_vgg", 1024)):
         source = fixture_pipelines[stem]
         batch_size = source.attributes["batch_size"]
@@ -42,7 +41,8 @@ def test_estimate_reports_energy_time_and_the_reference(capsys, database_path):
     code, out, _ = run(capsys, "estimate", "--model", "yolo26n", "--database", str(database_path))
     assert code == 0
     assert "yolo26n: batch size 1, input size 640, module level, forward" in out
-    assert "measured 24 kernels" in out and "composition error -20.0% energy, -20.0% time" in out
+    assert "measured 24 kernels" in out and "composition error -20.0%" in out
+    assert " us" not in out and "time" not in out  # estimate prints energy only; times stay in --json
 
 
 def test_estimate_json_matches_the_library(capsys, database_path):
@@ -59,15 +59,14 @@ def test_estimate_json_matches_the_library(capsys, database_path):
     assert result["overlap_saving_joules"] == 0.0
 
 
-def test_static_power_by_method_or_watts_does_not_change_a_sequential_total(capsys, database_path):
-    energies = []
-    for static_power in ("active_idle", "p8_idle", "150"):
-        _, out, _ = run(capsys, "estimate", "--model", "yolo26n", "--database", str(database_path), "--json",
-                        "--static-power", static_power)
-        (result,) = json.loads(out)
-        energies.append(result["energy_joules"])
-    assert len(set(energies)) == 1
-    assert result["static_power_watts"] == 150.0 and result["static_power_method"] == "user"
+def test_estimate_uses_the_static_power_stored_in_the_database(capsys, database_path):
+    _, out, _ = run(capsys, "estimate", "--model", "yolo26n", "--database", str(database_path), "--json")
+    (result,) = json.loads(out)
+    assert result["static_power_watts"] == 90.0
+    assert result["static_energy_joules"] == pytest.approx(90.0 * result["time_seconds"])
+    with pytest.raises(SystemExit):
+        run(capsys, "estimate", "--model", "yolo26n", "--database", str(database_path), "--static-power", "150")
+    capsys.readouterr()
 
 
 def test_kernel_table(capsys, database_path):
@@ -115,13 +114,13 @@ def test_export_from_a_measurement_store(capsys, tmp_path):
     conn = db.connect(store)
     db.upsert_kernel(conn, dict(kernel_key="k1", gpu_name="A40", freq_label="default", dtype="fp32",
                                 short_desc="legacy row", signature_json="{}", energy_j=1.0, time_s=0.001))
-    db.upsert_static(conn, dict(gpu_name="A40", freq_label="default", method="active_idle", power_w=90.0))
+    db.upsert_static(conn, dict(gpu_name="A40", freq_label="default", power_w=90.0))
     conn.close()
     output = tmp_path / "exported.jsonl"
     code, out, _ = run(capsys, "export", "--store", str(store), "--output", str(output))
     assert code == 0 and "1 signatures" in out and "keep it out of version control" in out
     exported = load(output)
-    assert len(exported) == 1 and exported.static_power(PLATFORM, "active_idle").watts == 90.0
+    assert len(exported) == 1 and exported.static_power(PLATFORM).watts == 90.0
 
 
 def test_helpful_errors(capsys, database_path, tmp_path):
@@ -129,8 +128,22 @@ def test_helpful_errors(capsys, database_path, tmp_path):
     assert code == 2 and "no signature database" in err
     code, _, err = run(capsys, "estimate", "--model", "yolo26n", "--database", str(database_path), "--gpu", "H100")
     assert code == 2 and "no signatures for H100" in err
-    code, _, err = run(capsys, "estimate", "--model", "yolo26n", "--database", str(database_path),
-                       "--static-power", "no_such_method")
+    without_static_power = tmp_path / "without_static_power.jsonl"
+    without_static_power.write_text("".join(
+        line for line in database_path.read_text().splitlines(keepends=True)
+        if json.loads(line).get("record") != "static_power"))
+    code, _, err = run(capsys, "estimate", "--model", "yolo26n", "--database", str(without_static_power))
     assert code == 2 and "no static power" in err
     code, out, _ = run(capsys, "measure")
     assert code == 2 and "static-power" in out
+
+
+def test_precision_is_an_option_of_the_model_and_only_fp32_is_supported(capsys, database_path):
+    code, out, _ = run(capsys, "estimate", "--model", "rf_vgg", "--batch-size", "4", "--database", str(database_path),
+                       "--precision", "fp32", "--json")
+    (result,) = json.loads(out)
+    assert code == 0 and result["missing_kernels"] == 0 and result["precision"] == "fp32"
+    with pytest.raises(SystemExit):
+        run(capsys, "estimate", "--model", "rf_vgg", "--batch-size", "4", "--database", str(database_path),
+            "--precision", "fp32_strict")
+    assert "invalid choice" in capsys.readouterr().err

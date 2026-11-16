@@ -32,6 +32,12 @@ FORWARD = "forward"
 BACKWARD = "backward"
 DIRECTIONS = (FORWARD, BACKWARD)
 
+DEFAULT_PRECISION = "fp32"
+"""32-bit floats, with TF32 allowed for convolutions and matrix products."""
+PRECISIONS = (DEFAULT_PRECISION,)
+"""The supported precisions. ``fp32`` is the only one so far; another precision would be written
+into the kernel's signature and so get its own keys."""
+
 CONTIGUOUS = "contiguous"
 LAYOUTS = (CONTIGUOUS, "channels_last")
 
@@ -106,14 +112,17 @@ def _shape_text(specification: Mapping) -> str:
 
 def short_description(signature: Mapping) -> str:
     """Human-readable label, e.g. ``Conv[3->16,k3,s2]@1x3x640x640`` or
-    ``op:cat[dim=1]@1x64x80x80+1x64x80x80``; backward kernels end in ``<backward>``."""
-    if "unresolved" in signature:
-        return signature["unresolved"].get("description") or signature["unresolved"]["key"]
-    inputs = signature["input"]
-    shape = _shape_text(inputs) if inputs["kind"] == "tensor" else "+".join(_shape_text(s) for s in inputs["items"])
+    ``op:cat[dim=1]@1x64x80x80+1x64x80x80``; backward kernels end in ``<backward>``, kernels at a
+    non-default precision in ``<that precision>``."""
     suffix = ""
     if signature.get("direction", FORWARD) != FORWARD:
         suffix = f" <{signature['direction']}" + ("" if signature.get("input_gradient", True) else ", no input gradient") + ">"
+    if signature.get("precision", DEFAULT_PRECISION) != DEFAULT_PRECISION:
+        suffix += f" <{signature['precision']}>"
+    if "unresolved" in signature:
+        return (signature["unresolved"].get("description") or signature["unresolved"]["key"]) + suffix
+    inputs = signature["input"]
+    shape = _shape_text(inputs) if inputs["kind"] == "tensor" else "+".join(_shape_text(s) for s in inputs["items"])
     if "op" in signature:
         op = signature["op"]
         parts = [str(a) for a in op["args"]] + [f"{k}={v}" for k, v in op["kwargs"].items()]
@@ -185,7 +194,7 @@ class KernelSpecification:
 
     @cached_property
     def key(self) -> str:
-        if not self.is_resolved:
+        if set(self.signature) == {"unresolved"}:
             return self.signature["unresolved"]["key"]
         return hashlib.sha256(self.canonical.encode()).hexdigest()[:16]
 
@@ -206,6 +215,11 @@ class KernelSpecification:
     @property
     def direction(self) -> str:
         return self.signature.get("direction", FORWARD)
+
+    @property
+    def precision(self) -> str:
+        """Numeric precision the kernel runs at; part of what the kernel is, like its direction."""
+        return self.signature.get("precision", DEFAULT_PRECISION)
 
     @property
     def input_gradient(self) -> bool:
@@ -239,6 +253,16 @@ class KernelSpecification:
             signature["direction"] = direction
             if not input_gradient:
                 signature["input_gradient"] = False
+        return KernelSpecification.from_signature(signature)
+
+    def with_precision(self, precision: str) -> "KernelSpecification":
+        """The same kernel at another numeric precision. The default precision is not written, so
+        the key of a default-precision kernel is the key of its structure alone."""
+        if precision not in PRECISIONS:
+            raise ValueError(f"unknown precision {precision!r}; known: {PRECISIONS}")
+        signature = {k: v for k, v in self.signature.items() if k != "precision"}
+        if precision != DEFAULT_PRECISION:
+            signature["precision"] = precision
         return KernelSpecification.from_signature(signature)
 
     def __str__(self) -> str:

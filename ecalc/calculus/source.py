@@ -6,7 +6,7 @@ import dataclasses
 from typing import Iterable, Sequence
 
 from .expression import Pipeline, SignatureSource
-from .kernel import FORWARD, KernelSpecification
+from .kernel import DEFAULT_PRECISION, FORWARD, PRECISIONS, KernelSpecification
 from .signature import Platform, Signature, StaticPower
 
 
@@ -21,27 +21,32 @@ class ModelRun:
     time_seconds: float
     energy_joules: float
     direction: str = FORWARD
+    precision: str = DEFAULT_PRECISION
 
     @property
     def identity(self) -> tuple:
-        return (self.model, self.batch_size, self.input_size, self.direction, self.platform)
+        return (self.model, self.batch_size, self.input_size, self.direction, self.precision, self.platform)
 
 
 def pipeline_name(model: str, batch_size: int, input_size: int, level: str = "module",
-                  direction: str = FORWARD) -> str:
-    """Name under which a model's pipeline is stored in a signature database."""
-    return f"{model}/batch_size={batch_size}/input_size={input_size}/{level}/{direction}"
+                  direction: str = FORWARD, precision: str = DEFAULT_PRECISION) -> str:
+    """Name under which a model's pipeline is stored in a signature database. The precision is
+    part of the name only when it is not the default."""
+    if precision not in PRECISIONS:
+        raise ValueError(f"unknown precision {precision!r}; known: {PRECISIONS}")
+    name = f"{model}/batch_size={batch_size}/input_size={input_size}/{level}/{direction}"
+    return name if precision == DEFAULT_PRECISION else f"{name}/{precision}"
 
 
 class SignatureDatabase:
-    """Signatures, static power definitions, model pipelines and end-to-end runs, in memory.
+    """Signatures, static power, model pipelines and end-to-end runs, in memory.
 
     It is a ``SignatureSource`` that answers exact matches only; every hit is a stored signature.
     """
 
     def __init__(self) -> None:
         self._signatures: dict[tuple[str, Platform], Signature] = {}
-        self._static_powers: dict[tuple[str, str, str], StaticPower] = {}
+        self._static_powers: dict[Platform, StaticPower] = {}
         self._pipelines: dict[str, Pipeline] = {}
         self._model_runs: dict[tuple, ModelRun] = {}
 
@@ -54,8 +59,7 @@ class SignatureDatabase:
         self._signatures[index] = signature
 
     def add_static_power(self, static_power: StaticPower) -> None:
-        platform = static_power.platform
-        self._static_powers[(platform.gpu_name, platform.frequency_label, static_power.method)] = static_power
+        self._static_powers[static_power.platform] = static_power
 
     def add_pipeline(self, pipeline: Pipeline) -> None:
         self._pipelines[pipeline.name] = pipeline
@@ -73,14 +77,11 @@ class SignatureDatabase:
     def platforms(self) -> list[Platform]:
         return sorted({s.platform for s in self._signatures.values()}, key=str)
 
-    def static_power(self, platform: Platform, method: str) -> StaticPower:
-        """Static power of the platform's GPU and clock setting (it does not depend on precision)."""
+    def static_power(self, platform: Platform) -> StaticPower:
         try:
-            return self._static_powers[(platform.gpu_name, platform.frequency_label, method)]
+            return self._static_powers[platform]
         except KeyError:
-            known = sorted(m for g, f, m in self._static_powers if (g, f) == (platform.gpu_name, platform.frequency_label))
-            raise LookupError(f"no static power {method!r} for {platform.gpu_name}/{platform.frequency_label}; "
-                              f"known methods: {known}") from None
+            raise LookupError(f"no static power for {platform}") from None
 
     def static_powers(self) -> list[StaticPower]:
         return list(self._static_powers.values())
@@ -92,8 +93,8 @@ class SignatureDatabase:
         return list(self._pipelines.values())
 
     def model_run(self, model: str, batch_size: int, input_size: int, platform: Platform,
-                  direction: str = FORWARD) -> ModelRun | None:
-        return self._model_runs.get((model, batch_size, input_size, direction, platform))
+                  direction: str = FORWARD, precision: str = DEFAULT_PRECISION) -> ModelRun | None:
+        return self._model_runs.get((model, batch_size, input_size, direction, precision, platform))
 
     def model_runs(self) -> list[ModelRun]:
         return list(self._model_runs.values())

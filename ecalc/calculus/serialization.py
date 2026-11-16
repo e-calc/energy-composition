@@ -26,7 +26,7 @@ from typing import Any, Mapping
 
 from .errors import SchemaVersionError
 from .expression import Expression, Kernel, Parallel, Pipeline, Sequential, kernels
-from .kernel import FORWARD, KernelSpecification
+from .kernel import DEFAULT_PRECISION, FORWARD, KernelSpecification
 from .signature import MEASURED, Platform, Signature, StaticPower
 from .source import ModelRun, SignatureDatabase
 
@@ -54,13 +54,12 @@ def _dumps(document: Any) -> str:
 # ---- small records -----------------------------------------------------------------------------
 
 def platform_to_dict(platform: Platform) -> dict:
-    return {"gpu_name": platform.gpu_name, "frequency_label": platform.frequency_label,
-            "precision": platform.precision}
+    return {"gpu_name": platform.gpu_name, "frequency_label": platform.frequency_label}
 
 
 def platform_from_dict(data: Mapping) -> Platform:
-    _check_keys(data, {"gpu_name", "frequency_label", "precision"}, "platform")
-    return Platform(data["gpu_name"], data.get("frequency_label", "default"), data.get("precision", "fp32"))
+    _check_keys(data, {"gpu_name", "frequency_label"}, "platform")
+    return Platform(data["gpu_name"], data.get("frequency_label", "default"))
 
 
 def _kernel_from_entry(key: str, signature: Mapping) -> KernelSpecification:
@@ -96,24 +95,25 @@ def signature_from_dict(data: Mapping) -> Signature:
 
 
 def static_power_to_dict(static_power: StaticPower) -> dict:
-    return {"platform": platform_to_dict(static_power.platform), "method": static_power.method,
-            "watts": static_power.watts}
+    return {"platform": platform_to_dict(static_power.platform), "watts": static_power.watts}
 
 
 def static_power_from_dict(data: Mapping) -> StaticPower:
-    return StaticPower(platform_from_dict(data["platform"]), data["method"], float(data["watts"]))
+    _check_keys(data, {"platform", "watts"}, "static power")
+    return StaticPower(platform_from_dict(data["platform"]), float(data["watts"]))
 
 
 def model_run_to_dict(run: ModelRun) -> dict:
     return {"model": run.model, "batch_size": run.batch_size, "input_size": run.input_size,
-            "direction": run.direction, "platform": platform_to_dict(run.platform),
+            "direction": run.direction, "precision": run.precision, "platform": platform_to_dict(run.platform),
             "time_seconds": run.time_seconds, "energy_joules": run.energy_joules}
 
 
 def model_run_from_dict(data: Mapping) -> ModelRun:
     return ModelRun(data["model"], int(data["batch_size"]), int(data["input_size"]),
                     platform_from_dict(data["platform"]), float(data["time_seconds"]),
-                    float(data["energy_joules"]), data.get("direction", FORWARD))
+                    float(data["energy_joules"]), data.get("direction", FORWARD),
+                    data.get("precision", DEFAULT_PRECISION))
 
 
 # ---- expressions and pipelines -----------------------------------------------------------------
@@ -180,7 +180,7 @@ def database_to_lines(database: SignatureDatabase) -> list[str]:
         lines.append(_dumps({"record": "kernel", "key": key, "kernel": table[key].signature}))
     for signature in sorted(database.signatures(), key=lambda s: (s.kernel.key, str(s.platform))):
         lines.append(_dumps({"record": "signature", **_signature_fields(signature)}))
-    for static_power in sorted(database.static_powers(), key=lambda p: (str(p.platform), p.method)):
+    for static_power in sorted(database.static_powers(), key=lambda p: str(p.platform)):
         lines.append(_dumps({"record": "static_power", **static_power_to_dict(static_power)}))
     for pipeline in sorted(database.pipelines(), key=lambda p: p.name):
         lines.append(_dumps({"record": "pipeline", **_pipeline_fields(pipeline)}))

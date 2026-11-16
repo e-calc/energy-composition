@@ -26,11 +26,11 @@ if [[ "$pm" != "Enabled" ]]; then
 fi
 
 if [[ "${SKIP_STATIC:-0}" == "1" ]]; then echo "=== STATIC === skipped (SKIP_STATIC=1, reusing stored rows)"; else
-echo "=== STATIC ===";   uv run python scripts/measure_static.py --models yolo26n --auto-window --with-p8 $EXTRA 2>&1 | grep -Ev "$FILTER"; fi
+echo "=== STATIC ===";   uv run python scripts/measure_static.py --models yolo26n --auto-window $EXTRA 2>&1 | grep -Ev "$FILTER"; fi
 echo "=== KERNELS ($LEVEL) ===";  uv run python scripts/build_kernel_db.py --models "$MODELS" --batch "$BATCH" --level "$LEVEL" --profile-kernel-time $EXTRA 2>&1 | grep -Ev "$FILTER" | grep -Ev "repeat [0-9]"
 if [[ "${SKIP_E2E:-0}" == "1" ]]; then echo "=== E2E === skipped (SKIP_E2E=1, reusing stored rows)"; else
 echo "=== E2E ===";      uv run python scripts/measure_model_e2e.py --models "$MODELS" --batch "$BATCH" --profile-kernel-time $EXTRA 2>&1 | grep -Ev "$FILTER"; fi
 CMP=""; if [[ "$LEVEL" == "leaf" ]]; then CMP="--compare-levels"; fi
-echo "=== ESTIMATE active_idle ==="; uv run python scripts/estimate_model.py --models "$MODELS" --batch "$BATCH" --level "$LEVEL" --static-method active_idle --plot --tag "active_idle_b$BATCH" $CMP
+echo "=== ESTIMATE ==="; uv run python scripts/estimate_model.py --models "$MODELS" --batch "$BATCH" --level "$LEVEL" --plot --tag "b$BATCH" $CMP
 uv run python -m ecalc export   # data/signature_database.jsonl, the input of `ecalc estimate`
 echo "=== DONE ==="

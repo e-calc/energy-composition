@@ -24,10 +24,9 @@ def _specifications(count: int = 8):
 def _database() -> SignatureDatabase:
     specifications = _specifications()
     database = synthetic_database(specifications)
-    database.add_signature(Signature(specifications[0], Platform("A100", "1500", "fp32_strict"), 0.1234567891, 12.5,
+    database.add_signature(Signature(specifications[0], Platform("A100", "1500"), 0.1234567891, 12.5,
                                      "interpolated", "chord over batch size between 1 and 8"))
-    database.add_static_power(StaticPower(PLATFORM, "active_idle", 89.69807891254976))
-    database.add_static_power(StaticPower(PLATFORM, "p8_idle", 23.4))
+    database.add_static_power(StaticPower(PLATFORM, 89.69807891254976))
     rng = random.Random(0)
     for name in ("first", "second"):
         database.add_pipeline(Pipeline(name, random_expression(rng, specifications), {"model": name, "batch_size": 2}))
@@ -133,13 +132,39 @@ def test_key_changes_with_shape_dtype_layout_and_direction():
     assert len(keys) == len(variants) + 1
 
 
-def test_default_layout_and_direction_are_not_written():
+def test_default_layout_direction_and_precision_are_not_written():
     base = KernelSpecification.from_signature(_convolution())
     assert TensorSpecification((1, 3, 64, 64)).as_dict() == {"shape": [1, 3, 64, 64], "dtype": "float32"}
     assert "layout" not in base.canonical and "direction" not in base.canonical
     assert base.with_direction("backward").with_direction("forward") == base
+    assert "precision" not in base.canonical and base.precision == "fp32"
+    assert base.with_precision("fp32") == base
     assert base.inputs == (TensorSpecification((1, 3, 64, 64)),)
     assert KernelSpecification.from_signature(_convolution(layout="channels_last")).inputs[0].layout == "channels_last"
+
+
+def test_fp32_is_the_only_precision_and_another_one_would_get_its_own_keys(monkeypatch):
+    from ecalc.calculus import PRECISIONS, pipeline_name
+    from ecalc.calculus import kernel as kernel_module, source as source_module
+
+    base = KernelSpecification.from_signature(_convolution())
+    unresolved = KernelSpecification.from_key("0123456789abcdef", "a kernel known only by key")
+    assert PRECISIONS == ("fp32",)
+    for unsupported in ("fp32_strict", "fp16"):
+        with pytest.raises(ValueError, match="unknown precision"):
+            base.with_precision(unsupported)
+        with pytest.raises(ValueError, match="unknown precision"):
+            pipeline_name("m", 1, 640, precision=unsupported)
+    # the slot is kept: once a precision is supported it is part of the kernel and of the pipeline name
+    monkeypatch.setattr(kernel_module, "PRECISIONS", ("fp32", "fp16"))
+    monkeypatch.setattr(source_module, "PRECISIONS", ("fp32", "fp16"))
+    half = base.with_precision("fp16")
+    assert half.precision == "fp16" and half.key != base.key and half.with_precision("fp32") == base
+    assert half.with_direction("backward").precision == "fp16"
+    assert half.description == "Conv[3->16,k3,s2]@1x3x64x64 <fp16>"
+    assert unresolved.with_precision("fp16").key != unresolved.key
+    assert pipeline_name("m", 1, 640) == "m/batch_size=1/input_size=640/module/forward"
+    assert pipeline_name("m", 1, 640, precision="fp16") == "m/batch_size=1/input_size=640/module/forward/fp16"
 
 
 def test_descriptions():
@@ -197,6 +222,16 @@ def test_unknown_fields_and_dangling_references_are_rejected():
     signature_line = next(i for i, line in enumerate(lines) if '"record":"signature"' in line)
     with pytest.raises(ValueError, match="before its kernel record"):
         database_from_lines([lines[0], lines[signature_line]])
+    # a static power record written with a measurement method, as older exports did
+    with pytest.raises(ValueError, match="unknown fields"):
+        database_from_lines([lines[0], json.dumps({
+            "record": "static_power", "method": "p8_idle", "watts": 23.4,
+            "platform": {"gpu_name": "A40", "frequency_label": "default"}})])
+    # precision is part of the kernel, not of the platform
+    with pytest.raises(ValueError, match="unknown fields"):
+        database_from_lines([lines[0], json.dumps({
+            "record": "static_power", "watts": 90.0,
+            "platform": {"gpu_name": "A40", "frequency_label": "default", "precision": "fp32"}})])
 
 
 def test_a_key_collision_is_refused():

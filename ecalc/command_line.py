@@ -20,8 +20,8 @@ import sys
 from pathlib import Path
 
 from . import config as C
-from .calculus import (DIRECTIONS, FORWARD, MEASURED, Estimate, Kernel, Pipeline, Platform, SignatureDatabase,
-                       StaticPower, dump, evaluate, kernels, load, pipeline_name)
+from .calculus import (DEFAULT_PRECISION, DIRECTIONS, FORWARD, MEASURED, PRECISIONS, Estimate, Kernel, Pipeline,
+                       Platform, SignatureDatabase, StaticPower, dump, evaluate, kernels, load, pipeline_name)
 from .calculus.errors import EnergyCalculusError
 from .calculus.serialization import expression_to_dict, pipeline_from_dict
 
@@ -64,29 +64,24 @@ def open_database(path: str | Path | None) -> SignatureDatabase:
     return document
 
 
-def choose_platform(database: SignatureDatabase, gpu: str | None, frequency_label: str, precision: str) -> Platform:
+def choose_platform(database: SignatureDatabase, gpu: str | None, frequency_label: str) -> Platform:
     platforms = database.platforms()
     if gpu is None:
         names = sorted({p.gpu_name for p in platforms})
         if len(names) != 1:
             raise CommandError(f"--gpu is required: the database has {names or 'no signatures'}")
         gpu = names[0]
-    platform = Platform(gpu, frequency_label, precision)
+    platform = Platform(gpu, frequency_label)
     if platform not in platforms:
         raise CommandError(f"no signatures for {platform}; the database has {[str(p) for p in platforms]}")
     return platform
 
 
-def choose_static_power(database: SignatureDatabase, platform: Platform, text: str) -> StaticPower:
-    """``text`` is a stored method (``active_idle``, ``p8_idle``, ``post_burst``) or a number of watts."""
+def stored_static_power(database: SignatureDatabase, platform: Platform) -> StaticPower:
     try:
-        return StaticPower(platform, "user", float(text))
-    except ValueError:
-        pass
-    try:
-        return database.static_power(platform, text)
+        return database.static_power(platform)
     except LookupError as error:
-        raise CommandError(f"{error}. Pass --static-power <watts> or run `ecalc measure static-power`.") from None
+        raise CommandError(f"{error} in the database. Run `ecalc measure static-power`.") from None
 
 
 def source_for(database: SignatureDatabase, fill: str | None):
@@ -103,7 +98,8 @@ def parse_models(text: str) -> list[str]:
     return list(MODEL_GROUPS[text]) if text in MODEL_GROUPS else [m.strip() for m in text.split(",") if m.strip()]
 
 
-def capture_pipeline(model: str, batch_size: int, input_size: int, level: str, direction: str) -> Pipeline:
+def capture_pipeline(model: str, batch_size: int, input_size: int, level: str, direction: str,
+                     precision: str = DEFAULT_PRECISION) -> Pipeline:
     """Capture a model's kernels on CPU. Needs torch (and Ultralytics for YOLO26)."""
     try:
         import torch
@@ -118,10 +114,11 @@ def capture_pipeline(model: str, batch_size: int, input_size: int, level: str, d
     torch.set_num_threads(min(torch.get_num_threads(), 8))
     network = load_model(model, "cpu")
     records = capture(network, model_input(model, batch_size, input_size, "cpu"), level=level, direction=direction)
-    rows = model_composition(records, model, "fp32", batch_size, input_size, "")
-    return Pipeline(pipeline_name(model, batch_size, input_size, level, direction), composition_expression(rows),
+    rows = model_composition(records, model, precision, batch_size, input_size, "")
+    return Pipeline(pipeline_name(model, batch_size, input_size, level, direction, precision),
+                    composition_expression(rows),
                     {"model": model, "batch_size": batch_size, "input_size": input_size, "level": level,
-                     "direction": direction, "captured_with": _capture_versions()})
+                     "direction": direction, "precision": precision, "captured_with": _capture_versions()})
 
 
 def _capture_versions() -> dict:
@@ -138,7 +135,7 @@ def _capture_versions() -> dict:
 
 
 def find_pipeline(database: SignatureDatabase, model: str, batch_size: int, input_size: int | None, level: str,
-                  direction: str) -> tuple[Pipeline, bool]:
+                  direction: str, precision: str = DEFAULT_PRECISION) -> tuple[Pipeline, bool]:
     """The model's pipeline and whether it came from the database (True) or a fresh CPU capture (False)."""
     if input_size is None:
         input_size = DEFAULT_INPUT_SIZE.get(model)
@@ -147,10 +144,10 @@ def find_pipeline(database: SignatureDatabase, model: str, batch_size: int, inpu
             if len(sizes) != 1:
                 raise CommandError(f"--input-size is required for {model}")
             input_size = sizes.pop()
-    stored = database.pipeline(pipeline_name(model, batch_size, input_size, level, direction))
+    stored = database.pipeline(pipeline_name(model, batch_size, input_size, level, direction, precision))
     if stored is not None:
         return stored, True
-    return capture_pipeline(model, batch_size, input_size, level, direction), False
+    return capture_pipeline(model, batch_size, input_size, level, direction, precision), False
 
 
 def load_pipeline_file(path: str | Path, database: SignatureDatabase) -> Pipeline:
@@ -201,7 +198,7 @@ def summarize(estimate: Estimate, static_power: StaticPower, negative_dynamic: s
                          "energy_joules": total.energy_joules} for name, total in estimate.by_provenance().items()}
     return {
         "platform": str(estimate.platform),
-        "static_power_watts": static_power.watts, "static_power_method": static_power.method,
+        "static_power_watts": static_power.watts,
         "kernels": len(estimate.leaves), "unique_kernels": len({leaf.specification.key for leaf in estimate.leaves}),
         "missing_kernels": len(estimate.missing),
         "time_seconds": estimate.time_seconds, "energy_joules": energy,
@@ -213,12 +210,13 @@ def summarize(estimate: Estimate, static_power: StaticPower, negative_dynamic: s
     }
 
 
-def print_summary(title: str, summary: dict, reference: dict | None = None) -> None:
+def print_summary(title: str, summary: dict, reference: dict | None = None, show_time: bool = True) -> None:
+    """``show_time=False`` prints energy only (``ecalc estimate``); times stay in the ``--json`` output."""
     print(title)
-    print(f"  platform            {summary['platform']}, static power {summary['static_power_watts']:.1f} W "
-          f"({summary['static_power_method']})")
+    print(f"  platform            {summary['platform']}, static power {summary['static_power_watts']:.1f} W")
     print(f"  kernels             {summary['kernels']} ({summary['unique_kernels']} unique)")
-    print(f"  time                {_microseconds(summary['time_seconds'])}")
+    if show_time:
+        print(f"  time                {_microseconds(summary['time_seconds'])}")
     print(f"  energy              {_millijoules(summary['energy_joules'])}")
     print(f"    static  s*T       {_millijoules(summary['static_energy_joules'])}")
     print(f"    dynamic d         {_millijoules(summary['dynamic_energy_joules'])}")
@@ -232,7 +230,10 @@ def print_summary(title: str, summary: dict, reference: dict | None = None) -> N
     if summary["missing_kernels"]:
         print(f"  WARNING             {summary['missing_kernels']} kernels have no signature and are priced at zero; "
               f"measure them or pass --fill formula")
-    if reference:
+    if reference and not show_time:
+        print(f"  measured end to end {_millijoules(reference['energy_joules'])}")
+        print(f"    composition error {_percent(reference['energy_error'])}")
+    elif reference:
         print(f"  measured end to end {_millijoules(reference['energy_joules'])} in "
               f"{_microseconds(reference['time_seconds'])}")
         print(f"    composition error {_percent(reference['energy_error'])} energy, "
@@ -241,15 +242,19 @@ def print_summary(title: str, summary: dict, reference: dict | None = None) -> N
               f"(dynamic + static power x measured time), error {_percent(reference['hybrid_energy_error'])}")
 
 
-def print_kernel_table(estimate: Estimate, static_power: StaticPower) -> None:
-    print(f"  {'kernel':16} {'us':>10} {'mJ':>10} {'dyn mJ':>10} {'W':>7}  {'provenance':12} description")
+def print_kernel_table(estimate: Estimate, static_power: StaticPower, show_time: bool = True) -> None:
+    def time_column(text: str) -> str:
+        return f" {text:>10}" if show_time else ""
+
+    print(f"  {'kernel':16}{time_column('us')} {'mJ':>10} {'dyn mJ':>10} {'W':>7}  {'provenance':12} description")
     for leaf in estimate.leaves:
         signature = leaf.signature
         if signature is None:
-            print(f"  {leaf.specification.key:16} {'-':>10} {'-':>10} {'-':>10} {'-':>7}  {'missing':12} "
+            print(f"  {leaf.specification.key:16}{time_column('-')} {'-':>10} {'-':>10} {'-':>7}  {'missing':12} "
                   f"{leaf.specification.description}")
             continue
-        print(f"  {leaf.specification.key:16} {signature.time_seconds * 1e6:>10.1f} {signature.energy_joules * 1e3:>10.3f} "
+        print(f"  {leaf.specification.key:16}{time_column(f'{signature.time_seconds * 1e6:.1f}')} "
+              f"{signature.energy_joules * 1e3:>10.3f} "
               f"{signature.dynamic_energy(static_power) * 1e3:>10.3f} {signature.power_watts:>7.1f}  "
               f"{signature.provenance:12} {leaf.specification.description}"
               + (f"  [{signature.detail}]" if signature.provenance != MEASURED and signature.detail else ""))
@@ -263,9 +268,6 @@ def add_database_arguments(parser: argparse.ArgumentParser) -> None:
                              "$ECALC_DATABASE, else data/signature_database.jsonl, else data/ecalc.sqlite")
     parser.add_argument("--gpu", default=None, help="GPU name in the database (default: the only one present)")
     parser.add_argument("--frequency-label", default="default")
-    parser.add_argument("--precision", default="fp32", choices=["fp32", "fp32_strict"])
-    parser.add_argument("--static-power", default="active_idle",
-                        help="stored method (active_idle, p8_idle, post_burst) or a number of watts")
     parser.add_argument("--fill", choices=["formula"], default=None,
                         help="estimate unmeasured kernels by interpolation and the light-op formula")
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
@@ -279,20 +281,24 @@ def add_model_arguments(parser: argparse.ArgumentParser) -> None:
                         help="YOLO image side in pixels (default 640) or RFML frame length (default 1024)")
     parser.add_argument("--level", choices=list(C.LEVELS), default="module")
     parser.add_argument("--direction", choices=list(DIRECTIONS), default=FORWARD)
+    parser.add_argument("--precision", choices=list(PRECISIONS), default=DEFAULT_PRECISION,
+                        help="numeric precision the model runs at; fp32 (with TF32) is the only one supported")
 
 
 def estimate_command(args) -> int:
     database = open_database(args.database)
-    platform = choose_platform(database, args.gpu, args.frequency_label, args.precision)
-    static_power = choose_static_power(database, platform, args.static_power)
+    platform = choose_platform(database, args.gpu, args.frequency_label)
+    static_power = stored_static_power(database, platform)
     source = source_for(database, args.fill)
     results = []
     for model in parse_models(args.models):
-        pipeline, stored = find_pipeline(database, model, args.batch_size, args.input_size, args.level, args.direction)
+        pipeline, stored = find_pipeline(database, model, args.batch_size, args.input_size, args.level, args.direction,
+                                         args.precision)
         estimate = evaluate(pipeline.expression, source, platform, on_missing="report")
         summary = summarize(estimate, static_power)
         attributes = pipeline.attributes
-        run = database.model_run(model, attributes["batch_size"], attributes["input_size"], platform, args.direction)
+        run = database.model_run(model, attributes["batch_size"], attributes["input_size"], platform, args.direction,
+                                 args.precision)
         reference = None
         if run is not None and estimate.is_complete:
             hybrid = summary["dynamic_energy_joules"] + static_power.watts * run.time_seconds
@@ -305,10 +311,11 @@ def estimate_command(args) -> int:
         if args.json:
             continue
         title = (f"{model}: batch size {attributes['batch_size']}, input size {attributes['input_size']}, "
-                 f"{args.level} level, {args.direction}" + ("" if stored else "  (captured on CPU, not in the database)"))
-        print_summary(title, summary, reference)
+                 f"{args.level} level, {args.direction}"
+                 + ("" if args.precision == DEFAULT_PRECISION else f", {args.precision}") + ("" if stored else "  (captured on CPU, not in the database)"))
+        print_summary(title, summary, reference, show_time=False)
         if args.kernels:
-            print_kernel_table(estimate, static_power)
+            print_kernel_table(estimate, static_power, show_time=False)
         print()
     if args.json:
         print(json.dumps(results, indent=2))
@@ -317,8 +324,8 @@ def estimate_command(args) -> int:
 
 def compose_command(args) -> int:
     database = open_database(args.database)
-    platform = choose_platform(database, args.gpu, args.frequency_label, args.precision)
-    static_power = choose_static_power(database, platform, args.static_power)
+    platform = choose_platform(database, args.gpu, args.frequency_label)
+    static_power = stored_static_power(database, platform)
     pipeline = load_pipeline_file(args.pipeline, database)
     estimate = evaluate(pipeline.expression, source_for(database, args.fill), platform, on_missing="report")
     summary = summarize(estimate, static_power, negative_dynamic="allow" if args.allow_negative_dynamic else "raise")
@@ -336,11 +343,12 @@ def plan_command(args) -> int:
     from .formula import with_formulas
 
     database = open_database(args.database)
-    platform = choose_platform(database, args.gpu, args.frequency_label, args.precision)
+    platform = choose_platform(database, args.gpu, args.frequency_label)
     source = with_formulas(database)
     report = []
     for model in parse_models(args.models):
-        pipeline, _ = find_pipeline(database, model, args.batch_size, args.input_size, args.level, args.direction)
+        pipeline, _ = find_pipeline(database, model, args.batch_size, args.input_size, args.level, args.direction,
+                                    args.precision)
         unique: dict[str, Kernel] = {}
         for leaf in kernels(pipeline.expression):
             unique.setdefault(leaf.specification.key, leaf)
@@ -373,7 +381,7 @@ def inspect_command(args) -> int:
         input_size = args.input_size or DEFAULT_INPUT_SIZE.get(model)
         if input_size is None:
             raise CommandError(f"--input-size is required for {model}")
-        pipeline = capture_pipeline(model, args.batch_size, input_size, args.level, args.direction)
+        pipeline = capture_pipeline(model, args.batch_size, input_size, args.level, args.direction, args.precision)
         leaves = list(kernels(pipeline.expression))
         print(f"{pipeline.name}: {len(leaves)} kernels, {len({leaf.specification.key for leaf in leaves})} unique")
         for leaf in leaves:
@@ -395,7 +403,7 @@ def export_command(args) -> int:
     conn = db.connect(store)
     path = db.export_signature_database(conn, args.output)
     database = db.signature_database(conn)
-    print(f"wrote {path}: {len(database)} signatures, {len(database.static_powers())} static power definitions, "
+    print(f"wrote {path}: {len(database)} signatures, {len(database.static_powers())} static power records, "
           f"{len(database.pipelines())} pipelines, {len(database.model_runs())} end-to-end runs")
     print("This file is measured data for one GPU; keep it out of version control.")
     return 0

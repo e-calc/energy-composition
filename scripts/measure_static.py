@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Measure static power definitions and store them.
+"""Measure the GPU's static power and store it.
 
 Thin wrapper kept for existing workflows; the same command is ``ecalc measure static-power``.
 """
